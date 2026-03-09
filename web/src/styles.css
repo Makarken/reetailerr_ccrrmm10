@@ -138,3 +138,12 @@ input:focus, select:focus, textarea:focus {
   max-width: 340px;
   box-shadow: 0 8px 32px rgba(60,40,20,0.18);
 }
+
+/* Emerald color overrides — Tailwind 2 CDN may not include extended palette */
+.bg-emerald-50 { background-color: #ecfdf5 !important; }
+.bg-emerald-100 { background-color: #d1fae5 !important; }
+.bg-emerald-700 { background-color: #047857 !important; }
+.text-emerald-700 { color: #047857 !important; }
+.text-emerald-800 { color: #065f46 !important; }
+.border-emerald-200 { border-color: #a7f3d0 !important; }
+.border-emerald-300 { border-color: #6ee7b7 !important; }
