@@ -18,11 +18,11 @@ const CONFIG = {
     authSessions: ['session_id', 'user_id', 'workspace_id', 'role', 'expires_at', 'created_at', 'last_seen_at', 'revoked_at', 'user_agent'],
     inventory: [
       'workspace_id', 'item_number', 'photo_url', 'buyee_url', 'model_name', 'category', 'description', 'purchase_date',
-      'base_cost', 'shipping_japan', 'tax', 'shipping_spain', 'repair_cost', 'total_cost',
+      'base_cost', 'buyout_price', 'shipping_japan', 'tax', 'customs_tax', 'shipping_spain', 'repair_cost', 'total_cost', 'listing_price',
       'status', 'listed_vinted', 'listed_vestiaire', 'need_rephoto', 'money_received',
       'sale_id', 'sale_price', 'sale_date', 'platform', 'buyer', 'platform_fee', 'profit',
       'tracking_number', 'shipping_label_url', 'shipping_date', 'shipping_status',
-      'repair_master', 'repair_sent_date', 'repair_notes', 'arrived_from_japan', 'japan_arrival_date', 'sold_storage_days', 'notes', 'updated_at'
+      'repair_master', 'repair_sent_date', 'repair_finished_date', 'repair_notes', 'arrived_from_japan', 'arrived_date', 'japan_arrival_date', 'sold_storage_days', 'notes', 'updated_at'
     ],
     sales: [
       'workspace_id', 'sale_id', 'timestamp', 'item_number', 'model_name', 'sale_date', 'sale_price', 'platform', 'buyer',
@@ -66,6 +66,10 @@ function routeAction(action, payload) {
     getInventory: () => ({ ok: true, items: scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory) }),
     getDashboard: () => ({ ok: true, stats: getDashboard() }),
     getActivity: () => ({ ok: true, activity: getActivity() }),
+    getAnalytics: () => ({ ok: true, ...getAnalytics() }),
+    getQC: () => ({ ok: true, attention: getQC() }),
+    getShippingOverview: () => ({ ok: true, ...getShippingOverview() }),
+    getRepairs: () => ({ ok: true, ...getRepairs(payload.month || '') }),
     getSalesByMonth: () => ({ ok: true, ...getSalesByMonth(payload.month || '') }),
     getItemByNumber: () => ({ ok: true, item: getItemByNumber(payload.item_number) }),
     createPurchase: () => ({ ok: true, item: createPurchase(payload) }),
@@ -74,10 +78,16 @@ function routeAction(action, payload) {
     editItem: () => ({ ok: true, item: editItem(payload.item_number, payload.updates || {}) }),
     updateStatus: () => ({ ok: true, item: updateStatus(payload.item_number, payload.status) }),
     updatePurchaseBalance: () => ({ ok: true, value: updatePurchaseBalanceManual(payload.value) }),
+    updateShipping: () => ({ ok: true, item: updateShipping(payload.item_number, payload.shipping || {}) }),
+    updateMoneyReceived: () => ({ ok: true, item: updateMoneyReceived(payload.item_number, payload.money_received) }),
+    sendToRepair: () => ({ ok: true, item: sendToRepair(payload.item_number, payload.master_id || payload.master_name || '') }),
+    completeRepair: () => ({ ok: true, item: completeRepair(payload.item_number, payload.repair_cost) }),
+    addRepairMaster: () => ({ ok: true, masters: addRepairMaster(payload.name, payload.city) }),
+    deleteRepairMaster: () => ({ ok: true, masters: deleteRepairMaster(payload.id) }),
     deleteItem: () => ({ ok: true, deleted: deleteItem(payload.item_number) })
   };
 
-  const adminOnly = { createPurchase: 1, recordSale: 1, cancelSale: 1, editItem: 1, updateStatus: 1, updatePurchaseBalance: 1, deleteItem: 1 };
+  const adminOnly = { createPurchase: 1, recordSale: 1, cancelSale: 1, editItem: 1, updateStatus: 1, updatePurchaseBalance: 1, updateShipping: 1, updateMoneyReceived: 1, sendToRepair: 1, completeRepair: 1, addRepairMaster: 1, deleteRepairMaster: 1, deleteItem: 1 };
   if (adminOnly[action] && auth.role !== 'admin') throw new Error('Недостаточно прав для этого действия');
 
   if (!handlers[action]) throw new Error('Unknown action: ' + action);
@@ -229,9 +239,11 @@ function createPurchase(payload) {
     category: String(payload.category || 'Сумка'),
     description: String(payload.description || ''),
     purchase_date: String(payload.purchase_date || now.slice(0, 10)),
-    base_cost: toNum(payload.base_cost || payload.total_cost || 0),
+    base_cost: toNum(payload.base_cost || payload.buyout_price || payload.total_cost || 0),
+    buyout_price: toNum(payload.buyout_price || payload.base_cost || payload.total_cost || 0),
     shipping_japan: toNum(payload.shipping_japan),
-    tax: toNum(payload.tax),
+    tax: toNum(payload.tax || payload.customs_tax),
+    customs_tax: toNum(payload.customs_tax || payload.tax),
     shipping_spain: toNum(payload.shipping_spain),
     repair_cost: toNum(payload.repair_cost),
     total_cost: toNum(payload.total_cost || payload.base_cost || 0),
@@ -239,7 +251,7 @@ function createPurchase(payload) {
     listed_vinted: 'no', listed_vestiaire: 'no', need_rephoto: 'no', money_received: 'no',
     sale_id: '', sale_price: '', sale_date: '', platform: '', buyer: '', platform_fee: '', profit: '',
     tracking_number: '', shipping_label_url: '', shipping_date: '', shipping_status: 'pending',
-    repair_master: '', repair_sent_date: '', repair_notes: '', arrived_from_japan: 'no', japan_arrival_date: '', sold_storage_days: '', notes: String(payload.notes || ''), updated_at: now
+    repair_master: '', repair_sent_date: '', repair_finished_date: '', repair_notes: '', arrived_from_japan: 'no', arrived_date: '', japan_arrival_date: '', sold_storage_days: '', listing_price: toNum(payload.listing_price), notes: String(payload.notes || ''), updated_at: now
   };
   if (!item.item_number || !item.model_name) throw new Error('Введите номер и модель');
   if (getItemByNumber(item.item_number)) throw new Error('Такой номер уже существует');
@@ -354,6 +366,13 @@ function editItem(itemNumber, updates) {
   Object.keys(updates || {}).forEach((k) => {
     if (CONFIG.HEADERS.inventory.indexOf(k) >= 0 && !['workspace_id', 'item_number'].includes(k)) item[k] = String(updates[k] == null ? '' : updates[k]);
   });
+  item.buyout_price = toNum(item.buyout_price || item.base_cost);
+  item.base_cost = toNum(item.base_cost || item.buyout_price);
+  item.customs_tax = toNum(item.customs_tax || item.tax);
+  item.tax = toNum(item.tax || item.customs_tax);
+  item.arrived_date = String(item.arrived_date || item.japan_arrival_date || '');
+  item.japan_arrival_date = String(item.japan_arrival_date || item.arrived_date || '');
+  item.total_cost = toNum(item.base_cost) + toNum(item.shipping_japan) + toNum(item.tax) + toNum(item.shipping_spain) + toNum(item.repair_cost);
   item.shipping_status = shippingStatus(item.shipping_status);
   item.money_received = boolText(item.money_received);
   item.need_rephoto = boolText(item.need_rephoto);
@@ -395,6 +414,117 @@ function getDashboard() {
     awaiting_japan: items.filter((i) => boolText(i.arrived_from_japan) !== 'yes').length
   };
 }
+
+function getAnalytics() {
+  const sales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
+  const monthly = {};
+  sales.forEach((s) => {
+    const m = monthKey(s.sale_date || s.timestamp);
+    if (!m) return;
+    if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, potential_profit: 0, items: [] };
+    const pr = toNum(s.profit);
+    monthly[m].sold_count += 1;
+    monthly[m].revenue += toNum(s.sale_price);
+    monthly[m].profit += boolText(s.money_received) === 'yes' ? pr : 0;
+    monthly[m].potential_profit += pr;
+    monthly[m].items.push(s);
+  });
+  return { monthly };
+}
+function getQC() {
+  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
+  const out = [];
+  items.forEach((i) => {
+    const reasons = [];
+    if (!String(i.description || '').trim()) reasons.push('Нет описания');
+    if (boolText(i.listed_vinted) !== 'yes') reasons.push('Не выставлено на Vinted');
+    if (boolText(i.listed_vestiaire) !== 'yes') reasons.push('Не выставлено на Vestiaire');
+    if (boolText(i.need_rephoto) === 'yes') reasons.push('Нужно перефото');
+    if (String(i.status) === 'sold' && boolText(i.money_received) !== 'yes') reasons.push('Продано, но деньги не зашли');
+    if (String(i.status) === 'sold' && String(i.shipping_status || 'pending') === 'pending') reasons.push('Продано, но не отправлено');
+    if (String(i.shipping_status) === 'shipped') reasons.push('Отправлено, но не доставлено');
+    if (reasons.length) out.push({ item_number: i.item_number, model_name: i.model_name, reasons, photo_url: i.photo_url, status: i.status });
+  });
+  return out;
+}
+function getShippingOverview() {
+  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'sold');
+  const summary = { pending: 0, shipped: 0, delivered: 0, cancelled: 0 };
+  items.forEach((i) => { summary[shippingStatus(i.shipping_status)] += 1; });
+  return { summary, items };
+}
+function getRepairs(month) {
+  const m = monthKey(month) || monthKey(nowIso());
+  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'repair' || monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m);
+  const masters = getRepairMasters();
+  const stats = { sent: items.filter((i) => monthKey(i.repair_sent_date) === m).length, completed: items.filter((i) => monthKey(i.repair_finished_date) === m).length, spend: items.reduce((a, i) => a + toNum(i.repair_cost), 0) };
+  return { month: m, items, masters, stats };
+}
+function getRepairMasters() {
+  const raw = String(getSettingValue('repair_masters', '[]') || '[]');
+  try { const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : []; } catch (_) { return []; }
+}
+function setRepairMasters(masters) { setSettingValue('repair_masters', JSON.stringify(masters || [])); }
+function addRepairMaster(name, city) {
+  const nm = String(name || '').trim();
+  if (!nm) throw new Error('Введите имя мастера');
+  const masters = getRepairMasters();
+  masters.push({ id: randomId('master'), name: nm, city: String(city || '').trim() });
+  setRepairMasters(masters);
+  return masters;
+}
+function deleteRepairMaster(id) {
+  const masters = getRepairMasters().filter((m) => String(m.id) !== String(id));
+  setRepairMasters(masters);
+  return masters;
+}
+function updateShipping(itemNumber, shipping) {
+  const item = getItemByNumber(itemNumber);
+  if (!item) throw new Error('Товар не найден');
+  item.shipping_status = shippingStatus(shipping.shipping_status || item.shipping_status);
+  item.shipping_date = String(shipping.shipping_date || item.shipping_date || '');
+  item.tracking_number = String(shipping.tracking_number || item.tracking_number || '');
+  item.shipping_label_url = String(shipping.shipping_label_url || item.shipping_label_url || '');
+  item.updated_at = nowIso();
+  saveInventoryItem(item);
+  addActivity(item.item_number, 'Обновление доставки', 'shipping', '', item.shipping_status);
+  return item;
+}
+function updateMoneyReceived(itemNumber, moneyReceived) {
+  const item = getItemByNumber(itemNumber);
+  if (!item) throw new Error('Товар не найден');
+  item.money_received = boolText(moneyReceived);
+  item.updated_at = nowIso();
+  saveInventoryItem(item);
+  addActivity(item.item_number, 'Обновление оплаты', 'money_received', '', item.money_received);
+  return item;
+}
+function sendToRepair(itemNumber, masterIdOrName) {
+  const item = getItemByNumber(itemNumber);
+  if (!item) throw new Error('Товар не найден');
+  const masters = getRepairMasters();
+  const m = masters.find((x) => String(x.id) === String(masterIdOrName));
+  item.repair_master = m ? `${m.name}${m.city ? ` (${m.city})` : ''}` : String(masterIdOrName || item.repair_master || '');
+  item.repair_sent_date = nowIso().slice(0, 10);
+  item.status = 'repair';
+  item.updated_at = nowIso();
+  saveInventoryItem(item);
+  addActivity(item.item_number, 'Отправка в ремонт', 'status', '', 'repair');
+  return item;
+}
+function completeRepair(itemNumber, repairCost) {
+  const item = getItemByNumber(itemNumber);
+  if (!item) throw new Error('Товар не найден');
+  item.repair_cost = toNum(repairCost != null ? repairCost : item.repair_cost);
+  item.total_cost = toNum(item.base_cost || item.buyout_price) + toNum(item.shipping_japan) + toNum(item.tax || item.customs_tax) + toNum(item.shipping_spain) + toNum(item.repair_cost);
+  item.status = 'ready';
+  item.repair_finished_date = nowIso().slice(0, 10);
+  item.updated_at = nowIso();
+  saveInventoryItem(item);
+  addActivity(item.item_number, 'Ремонт выполнен', 'repair', '', 'ready');
+  return item;
+}
+
 function addActivity(itemNumber, action, field, oldValue, newValue) {
   appendRow(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity, { workspace_id: activeWorkspaceId(), timestamp: nowIso(), item_number: itemNumber || '', action: action || '', field: field || '', old_value: oldValue || '', new_value: newValue || '', actor: REQUEST_CONTEXT && REQUEST_CONTEXT.login ? REQUEST_CONTEXT.login : 'web' });
 }

@@ -3,9 +3,15 @@ import { APPS_SCRIPT_URL } from './config.js';
 const ReactRef = window.React;
 const ReactDOMRef = window.ReactDOM;
 const htmRef = window.htm;
-if (!ReactRef || !ReactDOMRef || !htmRef) throw new Error('Не удалось загрузить React/ReactDOM/htm.');
+if (!ReactRef || !ReactDOMRef || !htmRef) throw new Error('Не удалось загрузить React/ReactDOM/htm из CDN.');
 const { useEffect, useMemo, useState } = ReactRef;
 const html = htmRef.bind(ReactRef.createElement);
+
+const SESSION_STORAGE_KEY = 'crm_session_v1';
+const loadStoredSession = () => { try { const raw = localStorage.getItem(SESSION_STORAGE_KEY); return raw ? JSON.parse(raw) : null; } catch (_) { return null; } };
+const saveStoredSession = (s) => s ? localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(s)) : localStorage.removeItem(SESSION_STORAGE_KEY);
+
+
 
 const SESSION_STORAGE_KEY = 'crm_session_v1';
 const STATUS = ['all', 'purchased', 'transit', 'repair', 'ready', 'listed', 'hold', 'sold', 'shipped', 'delivered'];
@@ -18,16 +24,20 @@ const loadStoredSession = () => { try { const raw = localStorage.getItem(SESSION
 const saveStoredSession = (s) => s ? localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(s)) : localStorage.removeItem(SESSION_STORAGE_KEY);
 
 const api = async (action, payload = null) => {
-  if (!APPS_SCRIPT_URL) throw new Error('Вставьте URL Apps Script в docs/src/config.js');
+  if (!APPS_SCRIPT_URL) throw new Error('Вставьте URL Apps Script в src/config.js');
   const token = loadStoredSession()?.token || '';
   if (!payload) {
-    const resp = await fetch(`${APPS_SCRIPT_URL}?action=${encodeURIComponent(action)}${token ? `&session_token=${encodeURIComponent(token)}` : ''}`);
-    const json = await resp.json();
+    const response = await fetch(`${APPS_SCRIPT_URL}?action=${encodeURIComponent(action)}${token ? `&session_token=${encodeURIComponent(token)}` : ''}`);
+    const json = await response.json();
     if (!json.ok) throw new Error(json.error || 'Ошибка API');
     return json;
   }
-  const resp = await fetch(APPS_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action, payload: token ? { ...payload, session_token: token } : payload }) });
-  const json = await resp.json();
+  const response = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, payload: token ? { ...payload, session_token: token } : payload })
+  });
+  const json = await response.json();
   if (!json.ok) throw new Error(json.error || 'Ошибка API');
   return json;
 };
@@ -48,8 +58,7 @@ function LoginPage({ onLogin }) {
   </form></div>`;
 }
 
-function App() {
-  const [session, setSession] = useState(loadStoredSession());
+function CrmApp({ onLogout, session }) {
   const [page, setPage] = useState('dashboard');
   const [error, setError] = useState('');
   const [dashboard, setDashboard] = useState({});
@@ -144,4 +153,35 @@ function App() {
 
 function Kpi({ title, value, featured }) { return html`<div className=${featured ? 'premium-card kpi kpi-featured' : 'premium-card kpi'}><div className="muted">${title}</div><div className="v">${value ?? 0}</div></div>`; }
 
-ReactDOMRef.createRoot(document.getElementById('app')).render(html`<${App} />`);
+function LoginPage({ onLogin }) {
+  const [identity, setIdentity] = useState('');
+  const [password, setPassword] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [error, setError] = useState('');
+  return html`<div className="min-h-screen flex items-center justify-center p-4"><form className="premium-card rounded-2xl p-5 w-full max-w-md space-y-3" onSubmit=${async (e) => { e.preventDefault(); setError(''); try { const r = await onLogin(identity, password, workspaceId); if (r?.require_workspace_choice) { setWorkspaces(r.workspaces || []); setWorkspaceId(r.workspaces?.[0]?.id || ''); } } catch (err) { setError(String(err.message || 'Ошибка входа')); } }}>
+    <h2 className="text-xl font-semibold">CRM Multi-Workspace</h2>
+    <input className="w-full rounded-xl border p-2" placeholder="Логин или email" value=${identity} onInput=${(e)=>setIdentity(e.target.value)} />
+    <input className="w-full rounded-xl border p-2" type="password" placeholder="Пароль" value=${password} onInput=${(e)=>setPassword(e.target.value)} />
+    ${workspaces.length ? html`<select className="w-full rounded-xl border p-2" value=${workspaceId} onChange=${(e)=>setWorkspaceId(e.target.value)}>${workspaces.map((w)=>html`<option value=${w.id}>${w.name}</option>`)}</select>` : null}
+    ${error ? html`<p className="text-rose-700 text-sm">${error}</p>` : null}
+    <button className="tap-btn w-full rounded-xl bg-luxe-accent text-white py-2">${workspaces.length ? 'Войти в выбранную базу' : 'Войти'}</button>
+  </form></div>`;
+}
+
+function RootApp() {
+  const [session, setSession] = useState(loadStoredSession());
+  const login = async (identity, password, workspace_id='') => {
+    const r = await api('login', { identity, password, workspace_id, user_agent: navigator.userAgent || 'web' });
+    if (r.require_workspace_choice) return r;
+    const next = { token: r.token, user: r.user };
+    saveStoredSession(next);
+    setSession(next);
+    return r;
+  };
+  const logout = async () => { try { await api('logout', {}); } catch (_) {} saveStoredSession(null); setSession(null); };
+  if (!session?.token) return html`<${LoginPage} onLogin=${login} />`;
+  return html`<${CrmApp} onLogout=${logout} session=${session} />`;
+}
+
+ReactDOMRef.createRoot(document.getElementById('app')).render(html`<${RootApp} />`);

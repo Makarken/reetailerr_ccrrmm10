@@ -1,2 +1,63 @@
-*{box-sizing:border-box}body{margin:0;background:#f5f1ea;color:#3f3227;font-family:Inter,system-ui,sans-serif}.app{max-width:1100px;margin:0 auto;padding:12px 12px 94px}.muted{color:#7b6755;font-size:12px}.err{color:#b91c1c}.premium-card{background:linear-gradient(160deg,#fffdfa,#f7efe4);border:1px solid #e5d6c3;border-radius:18px;box-shadow:0 3px 14px rgba(105,77,50,.08)}.top{padding:12px;display:flex;justify-content:space-between;align-items:center}.btn{border:1px solid #d8c4ad;background:#fff8ef;padding:10px 12px;border-radius:12px}.btn.primary{background:#6e5238;color:#fff;border-color:#6e5238}.btn.danger{border-color:#b91c1c;color:#b91c1c}.f{min-height:42px;padding:10px;border-radius:12px;border:1px solid #ddcdbb;background:#fff;width:100%}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}.kpis{margin-top:10px}.kpi{padding:12px}.kpi .v{font-size:24px;font-weight:700}.panel{padding:12px;margin-top:10px}.cards{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}.item{padding:10px;display:flex;gap:10px}.thumb{width:88px;height:88px;border-radius:12px;background:#f2e8db;display:flex;align-items:center;justify-content:center;overflow:hidden}.thumb img{width:100%;height:100%;object-fit:cover}.meta h4{margin:0 0 6px;font-size:15px}.meta p{margin:0 0 4px;font-size:13px;color:#6b5a4a}.list .item{border-radius:12px}.bottom{position:fixed;left:0;right:0;bottom:0;background:#fffdf9;border-top:1px solid #e3d6c6;display:flex;justify-content:space-around;padding:8px 8px calc(8px + env(safe-area-inset-bottom))}.b{background:transparent;border:none;color:#7b6755;display:flex;flex-direction:column;align-items:center}.b.active{color:#5f442d;font-weight:700}.fab{position:absolute;left:50%;transform:translateX(-50%);bottom:44px;width:52px;height:52px;border-radius:50%;border:none;background:#6e5238;color:#fff;font-size:28px}.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:14px}.login-card{width:min(420px,100%);padding:18px;border-radius:18px;border:1px solid #e4d5c3;background:#fffdf9;display:flex;flex-direction:column;gap:10px}.drawer{position:fixed;inset:0;background:rgba(60,42,28,.2);display:flex;justify-content:center;align-items:flex-end}.drawer-card{width:min(860px,100%);max-height:88vh;overflow:auto;padding:12px;border-radius:18px 18px 0 0}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}table{width:100%;font-size:12px}th,td{text-align:left;padding:6px;border-bottom:1px solid #ecdccc}
-@media (max-width:740px){.grid2{grid-template-columns:1fr}.thumb{width:72px;height:72px}}
+* { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+:root {
+  --font-premium: 'SF Pro Text', 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+body {
+  font-family: var(--font-premium);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: 0.01em;
+  line-height: 1.45;
+}
+
+h1, h2, h3, .font-semibold {
+  letter-spacing: 0.005em;
+}
+
+.premium-card {
+  background: linear-gradient(150deg, #fffefb 0%, #f8f4ed 100%);
+  border: 1px solid #e4dacd;
+  box-shadow: 0 1px 0 rgba(80, 54, 31, 0.03);
+}
+
+.premium-sub {
+  background: #fffdf9;
+  border: 1px solid #eadfce;
+}
+
+.kpi-featured {
+  background: linear-gradient(140deg, #fff9ef 0%, #f7ecdb 100%);
+  border-color: #d9c6ad;
+}
+
+.inventory-row {
+  transition: background .18s ease, transform .18s ease;
+}
+.inventory-row:hover {
+  background: #fbf8f3;
+}
+
+.tap-btn {
+  min-height: 44px;
+  transition: all .2s ease;
+  font-weight: 500;
+}
+.tap-btn:active { transform: translateY(1px) scale(0.995); }
+
+input, select, textarea {
+  transition: all .18s ease;
+  font: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 4px rgba(130,107,82,.14);
+  outline: none;
+}
+
+.fade-in { animation: fade .25s ease; }
+@keyframes fade { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform:none;} }
+
+@media (max-width: 768px) {
+  body { font-size: 16px; }
+  .premium-card { border-radius: 16px; }
+}
