@@ -1,7 +1,15 @@
 import { APPS_SCRIPT_URL } from './config.js';
 
-const { useEffect, useMemo, useState } = React;
-const html = htm.bind(React.createElement);
+const ReactRef = window.React;
+const ReactDOMRef = window.ReactDOM;
+const htmRef = window.htm;
+
+if (!ReactRef || !ReactDOMRef || !htmRef) {
+  throw new Error('Не удалось загрузить React/ReactDOM/htm из CDN. Проверьте подключение скриптов в index.html.');
+}
+
+const { useEffect, useMemo, useState } = ReactRef;
+const html = htmRef.bind(ReactRef.createElement);
 
 const SESSION_STORAGE_KEY = 'crm_session_v1';
 const PAGES_ADMIN = [['dashboard', 'Дашборд'], ['inventory', 'Склад'], ['activity', 'История']];
@@ -167,4 +175,4 @@ const table = 'width:100%;border-collapse:collapse;margin-top:10px;';
 const grid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0;';
 const metric = 'background:#fff;border:1px solid #eee;border-radius:10px;padding:10px;';
 
-ReactDOM.createRoot(document.getElementById('app')).render(html`<${App} />`);
+ReactDOMRef.createRoot(document.getElementById('app')).render(html`<${App} />`);
