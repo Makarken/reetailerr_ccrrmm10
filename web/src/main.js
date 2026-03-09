@@ -159,6 +159,17 @@ const ShippingBadge = ({ status }) => {
   return html`<span className=${`inline-flex items-center px-2 py-1 rounded-full border text-xs ${m.cls}`}>${m.label}</span>`;
 };
 
+const viewerStatusMeta = {
+  in_stock: { label: 'В наличии', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+  sold: { label: 'Продано', cls: 'bg-green-100 text-green-700 border-green-200' }
+};
+const viewerStatusKey = (status) => status === 'sold' ? 'sold' : 'in_stock';
+const ViewerStatusBadge = ({ status }) => {
+  const key = viewerStatusKey(status);
+  const m = viewerStatusMeta[key];
+  return html`<span className=${`inline-flex items-center px-2 py-1 rounded-full border text-xs ${m.cls}`}>${m.label}</span>`;
+};
+
 const AnalyticsChart = ({ series = [] }) => {
   const width = 680;
   const height = 220;
@@ -193,6 +204,7 @@ function CrmApp({ onLogout, session }) {
   const [selected, setSelected] = useState(null);
   const [showPurchase, setShowPurchase] = useState(false);
   const [showSale, setShowSale] = useState(false);
+  const [saleDraftItemNumber, setSaleDraftItemNumber] = useState('');
   const [salesMonth, setSalesMonth] = useState(new Date().toISOString().slice(0, 7));
   const [showMenu, setShowMenu] = useState(false);
   const [showFabMenu, setShowFabMenu] = useState(false);
@@ -200,6 +212,10 @@ function CrmApp({ onLogout, session }) {
   const [salesView, setSalesView] = useState('list');
   const [analyticsYear, setAnalyticsYear] = useState(new Date().getFullYear());
   const [analyticsType, setAnalyticsType] = useState('monthly');
+  const [workspaceList, setWorkspaceList] = useState([]);
+  const [showWorkspaceSwitcher, setShowWorkspaceSwitcher] = useState(false);
+  const isViewer = session?.user?.role === 'viewer';
+  const isAdmin = session?.user?.role === 'admin';
   const [purchaseBalanceInput, setPurchaseBalanceInput] = useState('0');
   const [repairData, setRepairData] = useState({ items: [], masters: [] });
   const [repairTarget, setRepairTarget] = useState(null);
@@ -231,6 +247,15 @@ function CrmApp({ onLogout, session }) {
       setMonthSales(sm || { month: salesMonth, items: [], summary: {} });
 
       setShippingOverview(sh || { summary: {}, items: [] });
+      
+      if (isAdmin) {
+        try {
+          const wl = await api('listWorkspaces');
+          setWorkspaceList(wl.workspaces || []);
+        } catch (e) {
+          console.warn('Не удалось загрузить список баз:', e.message);
+        }
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -246,9 +271,17 @@ function CrmApp({ onLogout, session }) {
     const q = query.trim().toLowerCase();
     return items.filter((i) => {
       const passQ = !q || String(i.item_number).includes(q) || String(i.model_name || '').toLowerCase().includes(q);
-      return passQ && (statusFilter === 'all' || i.status === statusFilter);
+      if (!passQ) return false;
+      if (!isViewer) return statusFilter === 'all' || i.status === statusFilter;
+      if (statusFilter === 'sold') return i.status === 'sold';
+      if (statusFilter === 'in_stock') return i.status !== 'sold';
+      return true;
     });
-  }, [items, query, statusFilter]);
+  }, [items, query, statusFilter, isViewer]);
+
+  useEffect(() => {
+    if (isViewer && statusFilter === 'all') setStatusFilter('in_stock');
+  }, [isViewer, statusFilter]);
 
   const rephotoItems = useMemo(() => items.filter((i) => boolText(i.need_rephoto) === 'yes'), [items]);
 
@@ -377,20 +410,49 @@ function CrmApp({ onLogout, session }) {
     setShowMenu(false);
   };
 
+  const switchWorkspace = async (workspaceId) => {
+    try {
+      setError('');
+      await api('switchWorkspace', { workspace_id: workspaceId });
+      setToast('База переключена');
+      setShowWorkspaceSwitcher(false);
+      loadAll();
+    } catch (e) {
+      setError('Ошибка переключения базы: ' + e.message);
+    }
+  };
+
+  const workspaceLabel = session?.user?.workspace_name || 'Базы';
+
   return html`<div className="min-h-screen pb-24 bg-gradient-to-br from-luxe-bg via-luxe-bg to-[#ece6db]">
-    <header className="sticky top-0 z-20 border-b border-luxe-border bg-luxe-bg/95 backdrop-blur px-4 py-3 relative flex items-center justify-between">
+    <header className="sticky top-0 z-20 border-b border-luxe-border bg-luxe-bg/95 backdrop-blur px-4 py-3 flex items-center justify-between flex-wrap gap-2">
       <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${() => setShowMenu(true)}>☰</button>
-      <h1 className="text-lg font-semibold absolute left-1/2 -translate-x-1/2">База с Катей</h1>
-      <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${loadAll}>Обновить</button>
+      <div className="flex items-center gap-2">
+        <h1 className="text-lg font-semibold">${workspaceLabel}</h1>
+        ${isAdmin && workspaceList.length > 1 ? html`<button className="tap-btn rounded-xl border border-luxe-border bg-white px-2 py-1 text-xs" onClick=${() => setShowWorkspaceSwitcher(true)}>🔄</button>` : html``}
+      </div>
+      <div className="flex items-center gap-2">
+        ${!isViewer && html`<button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${loadAll}>Обновить</button>`}
+        <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${() => { if (window.confirm('Выйти из аккаунта?')) onLogout(); }}>Выход</button>
+      </div>
     </header>
 
-    ${showMenu && html`<div className="fixed inset-0 z-40"><div className="absolute inset-0 bg-black/40" onClick=${() => setShowMenu(false)}></div><aside className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">Меню</h2><button className="tap-btn" onClick=${() => setShowMenu(false)}>✕</button></div><div className="mt-4 space-y-2">${MENU_PAGES.map(([id, label, icon]) => html`<button className=${`w-full text-left rounded-xl px-3 py-2 ${page === id ? 'bg-luxe-accent text-white' : 'bg-[#f7f4ef]'}`} onClick=${() => openFromMenu(id)}>${icon} ${label}</button>`)}</div></aside></div>`}
+    ${showWorkspaceSwitcher && workspaceList.length > 0 ? html`<div className="fixed inset-0 z-50"><div className="absolute inset-0 bg-black/40" onClick=${() => setShowWorkspaceSwitcher(false)}></div><div className="absolute top-20 right-4 bg-white rounded-xl shadow-xl p-4 w-64"><h3 className="font-semibold mb-3">Выберите базу</h3><div className="space-y-2">${workspaceList.map((w) => html`<button className="w-full text-left rounded-xl px-3 py-2 bg-[#f7f4ef] hover:bg-luxe-accent hover:text-white" onClick=${() => switchWorkspace(w.id)}>${w.name}</button>`)}</div></div></div>` : html``}
+
+    ${showMenu && html`<div className="fixed inset-0 z-40"><div className="absolute inset-0 bg-black/40" onClick=${() => setShowMenu(false)}></div><aside className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">Меню</h2><button className="tap-btn" onClick=${() => setShowMenu(false)}>✕</button></div><div className="mt-4 space-y-2">${MENU_PAGES.map(([id, label, icon]) => { if (isViewer && ['analytics', 'qc', 'rephoto'].includes(id)) return null; return html`<button className=${`w-full text-left rounded-xl px-3 py-2 ${page === id ? 'bg-luxe-accent text-white' : 'bg-[#f7f4ef]'}`} onClick=${() => openFromMenu(id)}>${icon} ${label}</button>`; })}</div></aside></div>`}
 
     <main className="p-4 max-w-7xl mx-auto space-y-3 fade-in">
       ${error && html`<div className="rounded-xl bg-rose-100 text-rose-700 p-3">${error}</div>`}
       ${loading && html`<div className="space-y-2"><div className="premium-card rounded-2xl p-5 animate-pulse h-16"></div><div className="premium-card rounded-2xl p-5 animate-pulse h-16"></div></div>`}
 
-      ${!loading && page === 'dashboard' && html`<section className="space-y-3"><div className="grid grid-cols-2 gap-3">${[
+      ${!loading && page === 'dashboard' && html`<section className="space-y-3"><div className="grid grid-cols-2 gap-3">${(isViewer ? [
+        ['📦', 'Активный склад', dashboard.active_stock || 0],
+        ['💰', 'Стоимость склада', money(dashboard.stock_value || 0)],
+        ['✅', 'Продано в этом месяце', dashboard.sold_this_month || 0],
+        ['💶', 'Прибыль за месяц', money(dashboard.profit_this_month)],
+        ['👥', 'На 1 человека', money(dashboard.profit_share_each)],
+        ['🏦', 'Остаток закупа', money(dashboard.purchase_balance || 0)]
+      ] : [
         ['📦', 'Активный склад', dashboard.active_stock || 0],
         ['💰', 'Стоимость склада', money(dashboard.stock_value || 0)],
         ['✅', 'Продано в этом месяце', dashboard.sold_this_month || 0],
@@ -401,13 +463,13 @@ function CrmApp({ onLogout, session }) {
         ['🚚', 'В пути из Японии', dashboard.in_transit || 0],
         ['🔧', 'На ремонте', dashboard.repair_count || 0],
         ['⚠️', 'Требуют внимания', dashboard.attention_count || 0]
-      ].map(([i, t, v]) => html`<div className="premium-card rounded-2xl p-4"><p className="text-xs text-luxe-muted">${i} ${t}</p><p className="text-lg font-semibold mt-1">${v}</p></div>`)}</div>
-      <div className="premium-card rounded-2xl p-4"><p className="text-sm font-medium">Ручная корректировка остатка закупа</p><div className="mt-2 flex gap-2"><input type="number" className="rounded-xl border border-luxe-border p-2 bg-white w-44" value=${purchaseBalanceInput} onInput=${(e) => setPurchaseBalanceInput(e.target.value)}/><button className="tap-btn rounded-xl border border-luxe-border px-3 py-2" onClick=${savePurchaseBalance}>Сохранить</button></div></div>
-      <div className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Ожидают отправки / доставки</h2><ul className="mt-2 text-sm space-y-2">${(shippingOverview.items || []).slice(0, 7).map((s) => html`<li className="border-b border-luxe-border/60 pb-2">№${s.item_number} · ${s.platform || '—'} · ${formatDate(s.sale_date)} · <${ShippingBadge} status=${s.shipping_status}/></li>`)}</ul></div></section>`}
+      ]).map(([i, t, v]) => html`<div className="premium-card rounded-2xl p-4"><p className="text-xs text-luxe-muted">${i} ${t}</p><p className="text-lg font-semibold mt-1">${v}</p></div>`)}</div>
+      ${!isViewer && html`<div className="premium-card rounded-2xl p-4"><p className="text-sm font-medium">Ручная корректировка остатка закупа</p><div className="mt-2 flex gap-2"><input type="number" className="rounded-xl border border-luxe-border p-2 bg-white w-44" value=${purchaseBalanceInput} onInput=${(e) => setPurchaseBalanceInput(e.target.value)}/><button className="tap-btn rounded-xl border border-luxe-border px-3 py-2" onClick=${savePurchaseBalance}>Сохранить</button></div></div>`}
+      ${!isViewer && html`<div className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Ожидают отправки / доставки</h2><ul className="mt-2 text-sm space-y-2">${(shippingOverview.items || []).slice(0, 7).map((s) => html`<li className="border-b border-luxe-border/60 pb-2">№${s.item_number} · ${s.platform || '—'} · ${formatDate(s.sale_date)} · <${ShippingBadge} status=${s.shipping_status}/></li>`)}</ul></div>`}</section>`}
 
-      ${!loading && page === 'inventory' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-3 grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><div className="md:col-span-2"><label className="text-xs text-luxe-muted">Поиск</label><input className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Номер или модель"/></div><div><label className="text-xs text-luxe-muted">Статус</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}><option value="all">Все</option>${Object.entries(STATUS_META).map(([k, v]) => html`<option value=${k}>${v.label}</option>`)}</select></div><div><label className="text-xs text-luxe-muted">Вид</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${inventoryView} onChange=${(e) => setInventoryView(e.target.value)}><option value="list">Списком</option><option value="grid-sm">Плитка маленькая</option><option value="grid-lg">Плитка большая</option></select></div></div>
-      ${!filteredItems.length ? html`<div className="premium-card rounded-2xl p-6 text-center text-luxe-muted">Склад пуст. Добавьте покупку через +</div>` : null}
-      <div className=${inventoryView === 'list' ? 'space-y-2' : inventoryView === 'grid-sm' ? 'grid grid-cols-2 md:grid-cols-4 gap-2' : 'grid grid-cols-1 md:grid-cols-2 gap-3'}>${filteredItems.map((i) => html`<article className="premium-card rounded-2xl p-3"><div className=${inventoryView === 'list' ? 'flex justify-between items-start gap-2' : 'space-y-2'}><div><img src=${i.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=300'} className=${inventoryView === 'grid-sm' ? 'h-24 w-full rounded-lg object-contain bg-white border border-luxe-border mb-2' : inventoryView === 'grid-lg' ? 'h-36 w-full rounded-lg object-contain bg-white border border-luxe-border mb-2' : 'h-16 w-16 rounded-lg object-contain bg-white border border-luxe-border mb-2'}/><p className="font-semibold">№ товара: ${i.item_number || '—'}</p><p className="text-sm">Модель: ${i.model_name || '—'}</p><p className="text-sm text-luxe-muted">Категория: ${i.category || '—'}</p><p className="text-sm">Себестоимость: ${money(i.total_cost)}</p><p className=${`text-sm ${stockAgeCls(daysOnStock(i))}`}>Дней на складе: ${daysOnStock(i, i.sale_date || '')}</p><p className="text-sm">Платформа: ${i.platform || '—'}</p><p className="text-sm">Цена продажи: ${n(i.sale_price) > 0 ? money(i.sale_price) : '—'}</p></div><div className="flex ${inventoryView === 'list' ? 'flex-col items-end' : 'flex-row'} gap-1"><${StatusBadge} status=${i.status}/><${ShippingBadge} status=${i.shipping_status}/></div></div><button className="tap-btn mt-2 rounded-lg bg-luxe-accent text-white px-3 py-1.5 text-xs" onClick=${() => setSelected(i)}>Открыть</button></article>`)}</div></section>`}
+      ${!loading && page === 'inventory' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-3 grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><div className="md:col-span-2"><label className="text-xs text-luxe-muted">Поиск</label><input className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Номер или модель"/></div><div><label className="text-xs text-luxe-muted">Статус</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white text-slate-900" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>${isViewer ? [['in_stock', 'В наличии'], ['sold', 'Продано']].map(([k, v]) => html`<option value=${k}>${v}</option>`) : [html`<option value="all">Все</option>`, ...Object.entries(STATUS_META).map(([k, v]) => html`<option value=${k}>${v.label}</option>`)]}</select></div><div><label className="text-xs text-luxe-muted">Вид</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${inventoryView} onChange=${(e) => setInventoryView(e.target.value)}><option value="list">Списком</option><option value="grid-sm">Плитка маленькая</option><option value="grid-lg">Плитка большая</option></select></div></div>
+      ${!filteredItems.length ? html`<div className="premium-card rounded-2xl p-6 text-center text-luxe-muted">${isViewer ? 'Нет товаров для просмотра' : 'Склад пуст. Добавьте покупку через +'}</div>` : null}
+      <div className=${inventoryView === 'list' ? 'space-y-2' : inventoryView === 'grid-sm' ? 'grid grid-cols-2 md:grid-cols-4 gap-2' : 'grid grid-cols-1 md:grid-cols-2 gap-3'}>${filteredItems.map((i) => html`<article className="premium-card rounded-2xl p-3"><div className=${inventoryView === 'list' ? 'flex justify-between items-start gap-2' : 'space-y-2'}><div><img src=${i.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=300'} className=${inventoryView === 'grid-sm' ? 'h-24 w-full rounded-lg object-contain bg-white border border-luxe-border mb-2' : inventoryView === 'grid-lg' ? 'h-36 w-full rounded-lg object-contain bg-white border border-luxe-border mb-2' : 'h-16 w-16 rounded-lg object-contain bg-white border border-luxe-border mb-2'}/><p className="font-semibold">№ товара: ${i.item_number || '—'}</p><p className="text-sm">Модель: ${i.model_name || '—'}</p><p className="text-sm text-luxe-muted">Категория: ${i.category || '—'}</p><p className="text-sm">Себестоимость: ${money(i.total_cost)}</p><p className=${`text-sm ${stockAgeCls(daysOnStock(i))}`}>Дней на складе: ${daysOnStock(i, i.sale_date || '')}</p><p className="text-sm">Платформа: ${i.platform || '—'}</p><p className="text-sm">Цена продажи: ${n(i.sale_price) > 0 ? money(i.sale_price) : '—'}</p></div><div className="flex ${inventoryView === 'list' ? 'flex-col items-end' : 'flex-row'} gap-1">${isViewer ? html`<${ViewerStatusBadge} status=${i.status}/>` : html`<${StatusBadge} status=${i.status}/><${ShippingBadge} status=${i.shipping_status}/>`}</div></div><button className="tap-btn mt-2 rounded-lg bg-luxe-accent text-white px-3 py-1.5 text-xs" onClick=${() => setSelected(i)}>Открыть</button></article>`)}</div></section>`}
 
       ${!loading && page === 'sales' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-4 flex flex-wrap items-end gap-3"><div><label className="text-xs text-luxe-muted">Месяц</label><input type="month" className="rounded-xl border border-luxe-border p-2 bg-white" value=${salesMonth} onInput=${(e) => setSalesMonth(e.target.value)}/></div><div><label className="text-xs text-luxe-muted">Вид</label><select className="rounded-xl border border-luxe-border p-2 bg-white" value=${salesView} onChange=${(e) => setSalesView(e.target.value)}><option value="list">Списком</option><option value="grid-sm">Плитка маленькая</option><option value="grid-lg">Плитка большая</option></select></div><p className="text-sm text-luxe-muted">${formatMonthRu(monthSales.month || salesMonth)}</p></div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">${[['Продано', monthSales.summary?.sold_count || 0], ['Выручка', money(monthSales.summary?.revenue)], ['Прибыль', money(monthSales.summary?.profit)], ['Прибыль в обработке', money(monthSales.summary?.potential_profit)]].map(([t, v]) => html`<div className="premium-card rounded-2xl p-3"><p className="text-xs text-luxe-muted">${t}</p><p className="text-lg font-semibold">${v}</p></div>`)}</div>
@@ -423,17 +485,17 @@ function CrmApp({ onLogout, session }) {
       ${!loading && page === 'settings' && html`<section className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Настройки</h2><p className="mt-2 text-sm text-luxe-muted">API подключен через Apps Script URL из <code>src/config.js</code>.</p><button className="tap-btn mt-3 rounded-lg border border-luxe-border px-3 py-2 text-sm" onClick=${loadAll}>Обновить данные</button></section>`}
     </main>
 
-    ${showFabMenu && html`<div className="fixed inset-0 z-30" onClick=${() => setShowFabMenu(false)}></div>`}
-    <div className="fixed right-4 bottom-24 z-40 flex flex-col items-end gap-2">
+    ${!isViewer && showFabMenu && html`<div className="fixed inset-0 z-30" onClick=${() => setShowFabMenu(false)}></div>`}
+    ${!isViewer && html`<div className="fixed right-4 bottom-24 z-40 flex flex-col items-end gap-2">
       ${showFabMenu && html`<div className="premium-card rounded-2xl p-2 flex flex-col gap-2"><button className="tap-btn rounded-xl bg-white border border-luxe-border px-3 py-2 text-sm" onClick=${() => { setShowPurchase(true); setShowFabMenu(false); }}>+ Покупка</button><button className="tap-btn rounded-xl bg-white border border-luxe-border px-3 py-2 text-sm" onClick=${() => { setShowSale(true); setShowFabMenu(false); }}>+ Продажа</button></div>`}
       <button className="tap-btn h-14 w-14 rounded-full bg-luxe-accent text-white text-3xl leading-none shadow-lg" onClick=${() => setShowFabMenu(!showFabMenu)}>+</button>
-    </div>
+    </div>`}
 
-    ${selected && html`<${ItemModal} item=${selected} close=${() => setSelected(null)} save=${saveItem} updateStatus=${updateStatus} updateShipping=${updateShipping} openSale=${() => setShowSale(true)} cancelSale=${cancelSale} deleteItem=${deleteItem} sendToRepair=${(num) => setRepairTarget(num)} />`}
+    ${selected && html`<${ItemModal} item=${selected} close=${() => setSelected(null)} save=${saveItem} updateStatus=${updateStatus} updateShipping=${updateShipping} openSale=${(itemNumber) => { setSaleDraftItemNumber(String(itemNumber || '')); setSelected(null); setShowSale(true); }} cancelSale=${cancelSale} deleteItem=${deleteItem} sendToRepair=${(num) => setRepairTarget(num)} isViewer=${isViewer} />`}
     ${repairTarget && html`<${RepairAssignModal} itemNumber=${repairTarget} masters=${repairData.masters || []} close=${() => setRepairTarget(null)} submit=${async (masterId) => { await sendToRepair(repairTarget, masterId); setRepairTarget(null); }} />`}
     ${repairCardItem && html`<${RepairItemModal} item=${repairCardItem} masters=${repairData.masters || []} close=${() => setRepairCardItem(null)} save=${saveItem} completeRepair=${completeRepair} />`}
     ${showPurchase && html`<${PurchaseModal} close=${() => setShowPurchase(false)} save=${savePurchase} />`}
-    ${showSale && html`<${SaleModal} close=${() => setShowSale(false)} items=${items} save=${saveSale} />`}
+    ${showSale && html`<${SaleModal} close=${() => { setShowSale(false); setSaleDraftItemNumber(''); }} initialItemNumber=${saleDraftItemNumber} items=${items} save=${async (payload) => { await saveSale(payload); setSaleDraftItemNumber(''); }} />`}
 
     <nav className="fixed bottom-0 left-0 right-0 bg-white/95 border-t border-luxe-border mx-auto max-w-7xl p-2 grid grid-cols-3 gap-1 z-20">
       ${BOTTOM_PAGES.map(([id, label, icon]) => html`<button onClick=${() => setPage(id)} className=${`tap-btn rounded-xl text-xs py-2 ${id === page ? 'bg-luxe-accent text-white' : 'text-luxe-muted'}`}>${icon}<br/>${label}</button>`)}
@@ -466,7 +528,8 @@ function PurchaseModal({ close, save }) {
   });
   const [preview, setPreview] = useState('');
   const computedTotal = n(f.base_cost) + n(f.shipping_japan) + n(f.tax) + n(f.shipping_spain) + n(f.repair_cost);
-  const invalid = !String(f.item_number).trim() || !String(f.model_name).trim() || computedTotal <= 0;
+  const normalizedItemNumber = String(f.item_number || '').replace(/\D/g, '');
+  const invalid = !normalizedItemNumber || !String(f.model_name).trim() || computedTotal <= 0;
 
   const onPickPhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -480,9 +543,9 @@ function PurchaseModal({ close, save }) {
     }
   };
 
-  return html`<div className="fixed inset-0 bg-black/45 p-3 md:p-8 z-30 overflow-auto"><form onSubmit=${(e) => { e.preventDefault(); if (!invalid) save({ ...f, total_cost: computedTotal }); }} className="max-w-2xl mx-auto premium-card rounded-2xl p-4 space-y-3"><div className="flex justify-between"><h2 className="font-semibold text-lg">Покупка</h2><button type="button" onClick=${close}>✕</button></div>
+  return html`<div className="fixed inset-0 bg-black/45 p-3 md:p-8 z-30 overflow-auto"><form onSubmit=${(e) => { e.preventDefault(); if (!invalid) save({ ...f, item_number: normalizedItemNumber, total_cost: computedTotal }); }} className="max-w-2xl mx-auto premium-card rounded-2xl p-4 space-y-3"><div className="flex justify-between"><h2 className="font-semibold text-lg">Покупка</h2><button type="button" onClick=${close}>✕</button></div>
     <div className="grid md:grid-cols-2 gap-2">
-      <label className="text-xs">Номер товара<input className="w-full mt-1 rounded-xl border p-2" value=${f.item_number} onInput=${(e) => setF({ ...f, item_number: e.target.value })} placeholder="108"/></label>
+      <label className="text-xs">Номер товара (только цифры)<input inputMode="numeric" pattern="[0-9]*" className="w-full mt-1 rounded-xl border p-2" value=${f.item_number} onInput=${(e) => setF({ ...f, item_number: String(e.target.value || '').replace(/\D/g, '') })} placeholder="108"/></label>
       <label className="text-xs">Модель<input className="w-full mt-1 rounded-xl border p-2" value=${f.model_name} onInput=${(e) => setF({ ...f, model_name: e.target.value })}/></label>
       <label className="text-xs">Категория<select className="w-full mt-1 rounded-xl border p-2" value=${f.category} onChange=${(e) => setF({ ...f, category: e.target.value })}>${CATEGORY_OPTIONS.map((c) => html`<option value=${c}>${c}</option>`)}</select></label>
       <label className="text-xs">Дата покупки<input type="date" className="w-full mt-1 rounded-xl border p-2" value=${f.purchase_date} onInput=${(e) => setF({ ...f, purchase_date: e.target.value })}/></label>
@@ -500,8 +563,12 @@ function PurchaseModal({ close, save }) {
     <button disabled=${invalid} className="tap-btn w-full rounded-xl bg-luxe-accent text-white py-3 disabled:opacity-50">Сохранить покупку</button></form></div>`;
 }
 
-function SaleModal({ close, items, save }) {
-  const [itemNumber, setItemNumber] = useState('');
+function SaleModal({ close, items, save, initialItemNumber = '' }) {
+  const [itemNumber, setItemNumber] = useState(String(initialItemNumber || ''));
+    useEffect(() => {
+      setItemNumber(String(initialItemNumber || ''));
+    }, [initialItemNumber]);
+
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
@@ -510,7 +577,7 @@ function SaleModal({ close, items, save }) {
   const [labelData, setLabelData] = useState('');
 
   useEffect(() => {
-    const num = String(itemNumber || '').trim();
+    const num = String(itemNumber || '').replace(/\D/g, '').trim();
     if (!num) {
       setSelectedItem(null);
       setLookupError('');
@@ -577,7 +644,7 @@ function SaleModal({ close, items, save }) {
   };
 
   return html`<div className="fixed inset-0 bg-black/45 p-3 md:p-8 z-30 overflow-auto"><form onSubmit=${(e) => { e.preventDefault(); if (!invalid) save({ ...f, item_number: selectedItem.item_number, sale_date: new Date().toISOString().slice(0, 10) }); }} className="max-w-xl mx-auto premium-card rounded-2xl p-4 space-y-3"><div className="flex justify-between"><h2 className="font-semibold text-lg">Продажа</h2><button type="button" onClick=${close}>✕</button></div>
-    <label className="text-xs block">Номер товара<input className="w-full mt-1 rounded-xl border p-2" value=${itemNumber} onInput=${(e) => setItemNumber(e.target.value)} placeholder="Например 108"/></label>
+    <label className="text-xs block">Номер товара<input inputMode="numeric" pattern="[0-9]*" className="w-full mt-1 rounded-xl border p-2" value=${itemNumber} onInput=${(e) => setItemNumber(String(e.target.value || '').replace(/\D/g, ''))} placeholder="Например 108"/></label>
     ${lookupLoading ? html`<p className="text-xs text-luxe-muted">Ищем товар...</p>` : null}
     ${lookupError ? html`<p className="text-xs text-rose-600">${lookupError}</p>` : null}
     ${selectedItem ? html`<div className="rounded-xl bg-[#f5efe6] p-3 text-sm">Товар: <b>№${selectedItem.item_number} · ${selectedItem.model_name || '—'}</b><br/>Себестоимость: <b>${money(selectedItem.total_cost)}</b> · Статус: <b>${STATUS_META[selectedItem.status]?.label || selectedItem.status}</b></div>` : null}
@@ -595,7 +662,41 @@ function SaleModal({ close, items, save }) {
     <button disabled=${invalid} className="tap-btn w-full rounded-xl bg-luxe-accent text-white py-3 disabled:opacity-50">Сохранить продажу</button></form></div>`;
 }
 
-function ItemModal({ item, close, save, updateStatus, updateShipping, openSale, cancelSale, deleteItem, sendToRepair }) {
+function ItemModal({ item, close, save, updateStatus, updateShipping, openSale, cancelSale, deleteItem, sendToRepair, isViewer }) {
+  if (isViewer) {
+    return html`<div className="fixed inset-0 bg-black/45 p-3 md:p-8 z-[60] overflow-auto"><div className="max-w-2xl mx-auto premium-card rounded-2xl p-4 space-y-3 max-h-[calc(100vh-2rem)] overflow-auto pb-24"><div className="flex justify-between mb-4"><h2 className="font-semibold text-lg">Карточка № ${item.item_number}</h2><button type="button" onClick=${close} className="tap-btn">✕</button></div>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          <img src=${item.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=900'} className="w-full h-56 rounded-xl object-contain bg-white border border-luxe-border"/>
+          <div className="space-y-2">
+            <div className="text-sm"><span className="text-luxe-muted">Номер товара:</span> <b>${item.item_number}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Модель:</span> <b>${item.model_name || '—'}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Категория:</span> <b>${item.category || '—'}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Описание:</span> <b>${item.notes || '—'}</b></div>
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div className="bg-[#f5efe6] rounded-xl p-3 space-y-1">
+            <div className="text-xs text-luxe-muted">Статус</div>
+            <${ViewerStatusBadge} status=${item.status}/>
+          </div>
+          <div className="bg-white border border-luxe-border rounded-xl p-3 space-y-2">
+            <div className="text-sm font-semibold">Финансовые данные</div>
+            <div className="text-sm"><span className="text-luxe-muted">Цена покупки:</span> <b>${money(item.base_cost || 0)}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Доставка с Японии:</span> <b>${money(item.shipping_japan || 0)}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Налог:</span> <b>${money(item.tax || 0)}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Ремонт:</span> <b>${money(item.repair_cost || 0)}</b></div>
+            <div className="border-t border-luxe-border pt-2 text-sm"><span className="font-semibold">Итого себестоимость:</span> <b className="text-base">${money(item.total_cost || 0)}</b></div>
+          </div>
+          ${item.sale_date ? html`<div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-1">
+            <div className="text-sm font-semibold text-emerald-700">Продано</div>
+            <div className="text-sm"><span className="text-luxe-muted">Платформа:</span> <b>${item.platform || '—'}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Дата:</span> <b>${formatDate(item.sale_date)}</b></div>
+            <div className="text-sm"><span className="text-luxe-muted">Цена:</span> <b>${money(item.sale_price)}</b></div>
+          </div>` : html`<div className="bg-slate-50 border border-slate-200 rounded-xl p-3"><div className="text-sm text-slate-600">Товар не продан</div></div>`}
+        </div>
+      </div></div></div>`;
+  }
   const [f, setF] = useState(item);
   const [labelData, setLabelData] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
@@ -671,14 +772,23 @@ function LoginPage({ onLogin }) {
   const [workspaceId, setWorkspaceId] = useState('');
   const [workspaces, setWorkspaces] = useState([]);
   const [error, setError] = useState('');
-  return html`<div className="min-h-screen flex items-center justify-center p-4"><form className="premium-card rounded-2xl p-5 w-full max-w-md space-y-3" onSubmit=${async (e) => { e.preventDefault(); setError(''); try { const r = await onLogin(identity, password, workspaceId); if (r?.require_workspace_choice) { setWorkspaces(r.workspaces || []); setWorkspaceId(r.workspaces?.[0]?.id || ''); } } catch (err) { setError(String(err.message || 'Ошибка входа')); } }}>
-    <h2 className="text-xl font-semibold">CRM Multi-Workspace</h2>
-    <input className="w-full rounded-xl border p-2" placeholder="Логин или email" value=${identity} onInput=${(e)=>setIdentity(e.target.value)} />
-    <input className="w-full rounded-xl border p-2" type="password" placeholder="Пароль" value=${password} onInput=${(e)=>setPassword(e.target.value)} />
-    ${workspaces.length ? html`<select className="w-full rounded-xl border p-2" value=${workspaceId} onChange=${(e)=>setWorkspaceId(e.target.value)}>${workspaces.map((w)=>html`<option value=${w.id}>${w.name}</option>`)}</select>` : null}
-    ${error ? html`<p className="text-rose-700 text-sm">${error}</p>` : null}
-    <button className="tap-btn w-full rounded-xl bg-luxe-accent text-white py-2">${workspaces.length ? 'Войти в выбранную базу' : 'Войти'}</button>
-  </form></div>`;
+  return html`
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-luxe-bg via-luxe-bg to-[#ece6db] p-4">
+      <form className="premium-card rounded-2xl p-8 w-full max-w-md space-y-6 shadow-xl" onSubmit=${async (e) => { e.preventDefault(); setError(''); try { const r = await onLogin(identity, password, workspaceId); if (r?.require_workspace_choice) { setWorkspaces(r.workspaces || []); setWorkspaceId(r.workspaces?.[0]?.id || ''); } } catch (err) { setError(String(err.message || 'Ошибка входа')); } }}>
+        <div className="flex flex-col items-center mb-2">
+          <h1 className="text-3xl font-bold text-luxe-accent mb-2 tracking-wide">CRM</h1>
+          <span className="text-base text-luxe-muted">Вход в систему</span>
+        </div>
+        <div className="space-y-4">
+          <input className="w-full rounded-xl border border-luxe-border p-3 text-lg text-center focus:outline-none focus:ring-2 focus:ring-luxe-accent" placeholder="Логин или email" value=${identity} onInput=${(e)=>setIdentity(e.target.value)} />
+          <input className="w-full rounded-xl border border-luxe-border p-3 text-lg text-center focus:outline-none focus:ring-2 focus:ring-luxe-accent" type="password" placeholder="Пароль" value=${password} onInput=${(e)=>setPassword(e.target.value)} />
+          ${workspaces.length ? html`<select className="w-full rounded-xl border border-luxe-border p-3 text-lg text-center" value=${workspaceId} onChange=${(e)=>setWorkspaceId(e.target.value)}>${workspaces.map((w)=>html`<option value=${w.id}>${w.name}</option>`)}</select>` : null}
+        </div>
+        ${error ? html`<p className="text-rose-700 text-center text-base">${error}</p>` : null}
+        <button className="tap-btn w-full rounded-xl bg-luxe-accent text-white py-3 text-lg font-semibold shadow hover:bg-luxe-accent/90 transition">${workspaces.length ? 'Войти в выбранную базу' : 'Войти'}</button>
+      </form>
+    </div>
+  `;
 }
 
 function RootApp() {
