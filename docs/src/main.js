@@ -110,7 +110,7 @@ function App() {
   const addPurchase = async () => {
     if (!canEdit) return;
     const item_number = prompt('Номер товара');
-    const model_name = prompt('Модель');
+    const model_name = prompt('��одель');
     const total_cost = Number(prompt('Себестоимость', '0') || 0);
     await api('createPurchase', { item_number, model_name, total_cost });
     await loadAll();
