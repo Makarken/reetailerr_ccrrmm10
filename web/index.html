@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Atelier Resale CRM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              luxe: {
+                bg: '#f5f3ef',
+                card: '#fffdf9',
+                ink: '#1f1c19',
+                sand: '#e9e1d5',
+                accent: '#826b52',
+                muted: '#7a6e61',
+                border: '#e4dacd'
+              }
+            },
+            boxShadow: {
+              soft: '0 6px 16px rgba(58, 44, 30, 0.08)',
+              luxe: '0 18px 38px rgba(58, 44, 30, 0.14)'
+            }
+          }
+        }
+      };
+    </script>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body class="bg-luxe-bg text-luxe-ink">
+    <div id="root"></div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

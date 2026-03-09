@@ -197,3 +197,15 @@ POST:
 - Экспорт отчёта по месяцу в PDF/CSV
 - Отдельный фильтр только по Vinted / только по Vestiaire
 - Простая авторизация PIN-кодом
+
+
+## Fix для ошибки `jekyll-build-pages`
+
+Если GitHub Actions падает на `jekyll-build-pages` (ошибка про `/github/workspace/docs`),
+используйте workflow из `.github/workflows/deploy-pages.yml` — он деплоит `docs/` как
+обычный статический артефакт и не зависит от Jekyll/SCSS.
+
+Что проверить в GitHub:
+1. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+2. Убедиться, что workflow `Deploy static docs to Pages` отработал успешно.
+3. После этого открыть Pages URL снова (лучше в инкогнито).
