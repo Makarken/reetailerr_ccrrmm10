@@ -422,6 +422,7 @@ function editItem(itemNumber, updates) {
   item.need_rephoto = boolText(item.need_rephoto);
   item.updated_at = nowIso();
   saveInventoryItem(item);
+  syncSaleRecord(item);
   addActivity(item.item_number, 'Редактирование карточки', 'card', '', 'updated');
   return item;
 }
@@ -517,11 +518,20 @@ function getDashboard() {
   const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
   const active = items.filter((i) => !['sold', 'cancelled'].includes(String(i.status)));
-  const purchaseBalanceAuto = items
+  const purchaseBalanceManual = toNum(getSettingValue('purchase_balance_manual', '0'));
+  const purchaseBalanceCostsReceived = items
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
     .reduce((a, i) => a + toNum(i.total_cost), 0);
+  const purchaseBalance = purchaseBalanceManual - purchaseBalanceCostsReceived;
   const profitReceived = sold.filter((s) => boolText(s.money_received) === 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
   const profitPending = sold.filter((s) => boolText(s.money_received) !== 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
+
+  const soldAllTime = items.filter((i) => String(i.status) === 'sold' && toNum(i.sold_storage_days) > 0);
+  const avgSaleDays = soldAllTime.length > 0 ? Math.round(soldAllTime.reduce((a, i) => a + toNum(i.sold_storage_days), 0) / soldAllTime.length) : 0;
+  const activeWithAge = active.filter((i) => storageStartDayGs(i) > 0);
+  const oldestItem = activeWithAge.length > 0 ? activeWithAge.reduce((best, i) => storageStartDayGs(i) > storageStartDayGs(best) ? i : best, activeWithAge[0]) : null;
+  const oldestDays = oldestItem ? storageStartDayGs(oldestItem) : 0;
+
   return {
     active_stock: active.length,
     stock_value: active.reduce((a, i) => a + toNum(i.total_cost), 0),
@@ -529,13 +539,32 @@ function getDashboard() {
     profit_this_month: profitReceived,
     profit_pending_this_month: profitPending,
     profit_share_each: profitReceived / 3,
-    purchase_balance: purchaseBalanceAuto,
+    purchase_balance: purchaseBalance,
+    purchase_balance_manual: purchaseBalanceManual,
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
-    in_transit: items.filter((i) => String(i.shipping_status) === 'shipped').length,
+    in_transit: items.filter((i) => String(i.status) === 'transit').length,
     repair_count: items.filter((i) => String(i.status) === 'repair').length,
-    attention_count: items.filter((i) => boolText(i.need_rephoto) === 'yes' || !String(i.photo_url || '')).length,
-    awaiting_japan: items.filter((i) => boolText(i.arrived_from_japan) !== 'yes').length
+    attention_count: items.filter((i) => {
+      if (boolText(i.need_rephoto) === 'yes') return true;
+      if (!String(i.photo_url || '')) return true;
+      if (String(i.status) === 'sold' && String(i.shipping_status || 'pending') === 'pending') return true;
+      if (String(i.status) === 'sold' && boolText(i.money_received) !== 'yes') return true;
+      return false;
+    }).length,
+    awaiting_japan: items.filter((i) => boolText(i.arrived_from_japan) !== 'yes' && !['sold', 'cancelled'].includes(String(i.status))).length,
+    avg_sale_days: avgSaleDays,
+    oldest_item_number: oldestItem ? oldestItem.item_number : '',
+    oldest_item_days: oldestDays
   };
+}
+
+function storageStartDayGs(item) {
+  const start = (boolText(item.arrived_from_japan) === 'yes' && item.japan_arrival_date) ? item.japan_arrival_date : '';
+  if (!start) return 0;
+  const s = new Date(start);
+  const e = new Date();
+  if (isNaN(s.getTime())) return 0;
+  return Math.max(0, Math.floor((e.getTime() - s.getTime()) / 86400000));
 }
 
 function getAnalytics() {
@@ -544,15 +573,24 @@ function getAnalytics() {
   sales.forEach((s) => {
     const m = monthKey(s.sale_date || s.timestamp);
     if (!m) return;
-    if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, profit_processing: 0, potential_profit: 0, items: [] };
+    if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, profit_processing: 0, potential_profit: 0, markup_sum: 0, markup_count: 0, items: [] };
     const pr = toNum(s.profit);
     const received = boolText(s.money_received) === 'yes';
+    const cost = toNum(s.total_cost);
+    const salePrice = toNum(s.sale_price);
     monthly[m].sold_count += 1;
-    monthly[m].revenue += toNum(s.sale_price);
+    monthly[m].revenue += salePrice;
     monthly[m].profit += received ? pr : 0;
     monthly[m].profit_processing += received ? 0 : pr;
     monthly[m].potential_profit += pr;
+    if (cost > 0) {
+      monthly[m].markup_sum += ((salePrice - cost) / cost) * 100;
+      monthly[m].markup_count += 1;
+    }
     monthly[m].items.push(s);
+  });
+  Object.keys(monthly).forEach((m) => {
+    monthly[m].avg_markup = monthly[m].markup_count > 0 ? monthly[m].markup_sum / monthly[m].markup_count : 0;
   });
   return { monthly };
 }
@@ -620,6 +658,7 @@ function updateShipping(itemNumber, shipping) {
   item.shipping_label_url = String(shipping.shipping_label_url || item.shipping_label_url || '');
   item.updated_at = nowIso();
   saveInventoryItem(item);
+  syncSaleRecord(item);
   addActivity(item.item_number, 'Обновление доставки', 'shipping', '', item.shipping_status);
   return item;
 }
@@ -629,6 +668,7 @@ function updateMoneyReceived(itemNumber, moneyReceived) {
   item.money_received = boolText(moneyReceived);
   item.updated_at = nowIso();
   saveInventoryItem(item);
+  syncSaleRecord(item);
   addActivity(item.item_number, 'Обновление оплаты', 'money_received', '', item.money_received);
   return item;
 }
@@ -673,6 +713,20 @@ function saveSale(sale) {
   const rows = getRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales);
   const idx = rows.findIndex((r) => String(r.workspace_id) === ws && String(r.sale_id) === String(sale.sale_id));
   if (idx < 0) throw new Error('Продажа не найдена');
+  getSheet(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).getRange(idx + 2, 1, 1, CONFIG.HEADERS.sales.length).setValues([objToRow(sale, CONFIG.HEADERS.sales)]);
+}
+function syncSaleRecord(item) {
+  if (!item.sale_id) return;
+  const ws = activeWorkspaceId();
+  const rows = getRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales);
+  const idx = rows.findIndex((r) => String(r.workspace_id) === ws && String(r.sale_id) === String(item.sale_id));
+  if (idx < 0) return;
+  const sale = rows[idx];
+  sale.money_received = item.money_received;
+  sale.shipping_status = item.shipping_status;
+  sale.tracking_number = String(item.tracking_number || '');
+  sale.shipping_date = String(item.shipping_date || '');
+  sale.shipping_label_url = String(item.shipping_label_url || '');
   getSheet(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).getRange(idx + 2, 1, 1, CONFIG.HEADERS.sales.length).setValues([objToRow(sale, CONFIG.HEADERS.sales)]);
 }
 function deleteRowsWhere(sheetName, headers, predicate) {
