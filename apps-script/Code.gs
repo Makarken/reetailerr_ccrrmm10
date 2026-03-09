@@ -227,12 +227,20 @@ function getItemByNumber(itemNumber) {
   const key = String(itemNumber || '').trim();
   return scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).find((i) => String(i.item_number) === key) || null;
 }
+
+function assertNumericItemNumber(itemNumber) {
+  const key = String(itemNumber || '').trim();
+  if (!/^\d+$/.test(key)) throw new Error('Номер товара должен содержать только цифры');
+  return key;
+}
+
 function createPurchase(payload) {
   const ws = activeWorkspaceId();
   const now = nowIso();
+  const itemNumber = assertNumericItemNumber(payload.item_number);
   const item = {
     workspace_id: ws,
-    item_number: String(payload.item_number || '').trim(),
+    item_number: itemNumber,
     photo_url: String(payload.photo_url || ''),
     buyee_url: String(payload.buyee_url || ''),
     model_name: String(payload.model_name || '').trim(),
@@ -253,14 +261,14 @@ function createPurchase(payload) {
     tracking_number: '', shipping_label_url: '', shipping_date: '', shipping_status: 'pending',
     repair_master: '', repair_sent_date: '', repair_finished_date: '', repair_notes: '', arrived_from_japan: 'no', arrived_date: '', japan_arrival_date: '', sold_storage_days: '', listing_price: toNum(payload.listing_price), notes: String(payload.notes || ''), updated_at: now
   };
-  if (!item.item_number || !item.model_name) throw new Error('Введите номер и модель');
+  if (!item.model_name) throw new Error('Введите модель');
   if (getItemByNumber(item.item_number)) throw new Error('Такой номер уже существует');
   appendRow(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory, item);
   addActivity(item.item_number, 'Добавление покупки', 'card', '', 'created');
   return item;
 }
 function recordSale(payload) {
-  const item = getItemByNumber(payload.item_number);
+  const item = getItemByNumber(assertNumericItemNumber(payload.item_number));
   if (!item) throw new Error('Товар не найден');
   const salePrice = toNum(payload.sale_price);
   const saleDate = String(payload.sale_date || nowIso().slice(0, 10));
@@ -399,14 +407,16 @@ function getDashboard() {
   const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
   const active = items.filter((i) => !['sold', 'cancelled'].includes(String(i.status)));
-  const purchaseManual = toNum(getSettingValue('purchase_balance_manual', '0'));
+  const purchaseBalanceAuto = items
+    .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
+    .reduce((a, i) => a + toNum(i.total_cost), 0);
   return {
     active_stock: active.length,
     stock_value: active.reduce((a, i) => a + toNum(i.total_cost), 0),
     sold_this_month: sold.length,
     profit_this_month: sold.reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0),
     profit_share_each: sold.reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0) / 3,
-    purchase_balance: purchaseManual || items.reduce((a, i) => a + toNum(i.total_cost), 0),
+    purchase_balance: purchaseBalanceAuto,
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
     in_transit: items.filter((i) => String(i.shipping_status) === 'shipped').length,
     repair_count: items.filter((i) => String(i.status) === 'repair').length,
