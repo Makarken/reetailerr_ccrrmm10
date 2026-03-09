@@ -72,6 +72,8 @@ function routeAction(action, payload) {
     getRepairs: () => ({ ok: true, ...getRepairs(payload.month || '') }),
     getSalesByMonth: () => ({ ok: true, ...getSalesByMonth(payload.month || '') }),
     getItemByNumber: () => ({ ok: true, item: getItemByNumber(payload.item_number) }),
+    listWorkspaces: () => ({ ok: true, workspaces: CONFIG.WORKSPACES }),
+    switchWorkspace: () => ({ ok: true, ...switchWorkspace(payload.workspace_id || '') }),
     createPurchase: () => ({ ok: true, item: createPurchase(payload) }),
     recordSale: () => ({ ok: true, item: recordSale(payload) }),
     cancelSale: () => ({ ok: true, item: cancelSale(payload.item_number) }),
@@ -403,6 +405,17 @@ function deleteItem(itemNumber) {
   return true;
 }
 function getActivity() { return scopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))); }
+function switchWorkspace(workspaceId) {
+  const ws = String(workspaceId || '').trim();
+  const found = workspaceById(ws);
+  if (!found) throw new Error('База не найдена');
+  const sessionRow = getRows(CONFIG.AUTH.sessions, CONFIG.HEADERS.authSessions).find((s) => s.session_id === REQUEST_CONTEXT.token && !s.revoked_at);
+  if (!sessionRow) throw new Error('Сессия не найдена');
+  const updatedRow = Object.assign({}, sessionRow, { workspace_id: ws });
+  upsertSessionRow(updatedRow);
+  REQUEST_CONTEXT.workspace_id = ws;
+  return { workspace_id: ws, workspace_name: found.name };
+}
 function getDashboard() {
   const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
@@ -410,12 +423,15 @@ function getDashboard() {
   const purchaseBalanceAuto = items
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
     .reduce((a, i) => a + toNum(i.total_cost), 0);
+  const profitReceived = sold.filter((s) => boolText(s.money_received) === 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
+  const profitPending = sold.filter((s) => boolText(s.money_received) !== 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
   return {
     active_stock: active.length,
     stock_value: active.reduce((a, i) => a + toNum(i.total_cost), 0),
     sold_this_month: sold.length,
-    profit_this_month: sold.reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0),
-    profit_share_each: sold.reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0) / 3,
+    profit_this_month: profitReceived,
+    profit_pending_this_month: profitPending,
+    profit_share_each: profitReceived / 3,
     purchase_balance: purchaseBalanceAuto,
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
     in_transit: items.filter((i) => String(i.shipping_status) === 'shipped').length,
@@ -615,4 +631,3 @@ function setSettingValue(key, value) {
   }
   sh.getRange(idx + 2, 1, 1, CONFIG.HEADERS.settings.length).setValues([objToRow({ ...rows[idx], value: String(value) }, CONFIG.HEADERS.settings)]);
 }
-function appendRow(sheetName, headers, obj) { getSheet(sheetName, headers).appendRow(objToRow(obj, headers)); }

@@ -61,3 +61,80 @@ input:focus, select:focus, textarea:focus {
   body { font-size: 16px; }
   .premium-card { border-radius: 16px; }
 }
+
+/* Custom color utilities — luxe theme (Tailwind 2 CDN doesn't include these) */
+.text-luxe-muted { color: #7b6755; }
+.text-luxe-accent { color: #6e5238; }
+.bg-luxe-bg { background-color: #f7f4ef; }
+.bg-luxe-accent { background-color: #6e5238; }
+.bg-luxe-bg\/95 { background-color: rgba(247,244,239,0.95); }
+.border-luxe-border { border-color: #e3d6c6; }
+.hover\:bg-luxe-accent\/90:hover { background-color: rgba(110,82,56,0.9); }
+.focus\:ring-luxe-accent:focus { --tw-ring-color: rgba(110,82,56,1); }
+.from-luxe-bg {
+  --tw-gradient-from: #f7f4ef;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to, rgba(247,244,239,0));
+}
+.via-luxe-bg {
+  --tw-gradient-stops: var(--tw-gradient-from), #f7f4ef, var(--tw-gradient-to, rgba(247,244,239,0));
+}
+.to-\[#ece6db\] { --tw-gradient-to: #ece6db; }
+
+/* Bottom navigation — guaranteed flex layout for all mobile browsers */
+.bottom-nav {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255,253,249,0.97);
+  border-top: 1px solid #e3d6c6;
+  padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+  z-index: 20;
+}
+.bottom-nav .nav-btn {
+  flex: 1 1 0%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  color: #7b6755;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 4px;
+  cursor: pointer;
+  border-radius: 10px;
+  transition: background .15s, color .15s;
+}
+.bottom-nav .nav-btn.active {
+  background: #6e5238;
+  color: #fff;
+  font-weight: 700;
+}
+
+/* Custom confirm/prompt dialog */
+.app-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.app-dialog-box {
+  background: #fffdf9;
+  border: 1px solid #e4dacd;
+  border-radius: 18px;
+  padding: 24px;
+  width: 100%;
+  max-width: 340px;
+  box-shadow: 0 8px 32px rgba(60,40,20,0.18);
+}
