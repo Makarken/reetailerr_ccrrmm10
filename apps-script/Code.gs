@@ -159,6 +159,7 @@ function login(identity, password, userAgent, selectedWorkspaceId) {
     }
   };
 }
+function getAuthUsers() { ensureDefaultUsers(); return getRows(CONFIG.AUTH.users, CONFIG.HEADERS.authUsers); }
 
 function getSessionInfo(token) {
   const t = String(token || '').trim();
@@ -474,3 +475,4 @@ function setSettingValue(key, value) {
   }
   sh.getRange(idx + 2, 1, 1, CONFIG.HEADERS.settings.length).setValues([objToRow({ ...rows[idx], value: String(value) }, CONFIG.HEADERS.settings)]);
 }
+function appendRow(sheetName, headers, obj) { getSheet(sheetName, headers).appendRow(objToRow(obj, headers)); }
