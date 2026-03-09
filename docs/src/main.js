@@ -4,7 +4,7 @@ const React = window.React;
 const ReactDOM = window.ReactDOM;
 
 if (!React || !ReactDOM) {
-  throw new Error('React/ReactDOM не загрузились из CDN.');
+  throw new Error('React/ReactDOM не загрузились');
 }
 
 const { useEffect, useState, createElement: h } = React;
@@ -56,9 +56,7 @@ function LoginPage({ onLogin }) {
       h('p', { style: { margin: 0, color: '#666', fontSize: '12px' } }, 'v3'),
       h('input', { style: { padding: '8px', border: '1px solid #ddd', borderRadius: '8px' }, placeholder: 'Логин', value: identity, onChange: (e) => setIdentity(e.target.value) }),
       h('input', { style: { padding: '8px', border: '1px solid #ddd', borderRadius: '8px' }, type: 'password', placeholder: 'Пароль', value: password, onChange: (e) => setPassword(e.target.value) }),
-      workspaces.length > 0 ? h('select', { style: { padding: '8px', border: '1px solid #ddd', borderRadius: '8px' }, value: workspaceId, onChange: (e) => setWorkspaceId(e.target.value) },
-        workspaces.map((w) => h('option', { key: w.id, value: w.id }, w.name))
-      ) : null,
+      workspaces.length > 0 ? h('select', { style: { padding: '8px', border: '1px solid #ddd', borderRadius: '8px' }, value: workspaceId, onChange: (e) => setWorkspaceId(e.target.value) }, workspaces.map((w) => h('option', { key: w.id, value: w.id }, w.name))) : null,
       error ? h('p', { style: { color: 'red' } }, error) : null,
       h('button', { style: { padding: '8px 10px', border: '1px solid #111', background: '#111', color: '#fff', borderRadius: '8px', cursor: 'pointer' } }, workspaces.length ? 'Войти' : 'Вход')
     )
@@ -150,7 +148,15 @@ function App() {
       canEdit ? h('button', { style: { padding: '8px 10px', border: '1px solid #111', background: '#111', color: '#fff', borderRadius: '8px', cursor: 'pointer', marginRight: '6px' }, onClick: addPurchase }, '+ Покупка') : null,
       h('table', { style: { width: '100%', borderCollapse: 'collapse', marginTop: '10px' } },
         h('thead', null, h('tr', null, h('th', null, '№'), h('th', null, 'Модель'), h('th', null, 'Статус'), h('th', null, 'Себест'), h('th', null, 'Продажа'), h('th', null, 'Действия'))),
-        h('tbody', null, items.map((i) => h('tr', { key: i.item_number }, h('td', null, i.item_number), h('td', null, i.model_name), h('td', null, i.status || '—'), h('td', null, `${Number(i.total_cost).toFixed(2)} €`), h('td', null, i.sale_price ? `${Number(i.sale_price).toFixed(2)} €` : '—'), h('td', null, canEdit ? [h('button', { key: 'sell', style: { padding: '8px 10px', border: '1px solid #ddd', background: '#fff', borderRadius: '8px', cursor: 'pointer', marginRight: '6px' }, onClick: () => sellItem(i) }, 'Продать'), i.status === 'sold' ? h('button', { key: 'cancel', style: { padding: '8px 10px', border: '1px solid #b91c1c', background: '#fff', color: '#b91c1c', borderRadius: '8px', cursor: 'pointer' }, onClick: () => cancelSale(i) }, 'Отмена') : null] : h('span', { style: { color: '#666' } }, 'read-only')))))
+        h('tbody', null, items.map((i) => h('tr', { key: i.item_number },
+          h('td', null, i.item_number),
+          h('td', null, i.model_name),
+          h('td', null, i.status || '—'),
+          h('td', null, `${Number(i.total_cost).toFixed(2)} €`),
+          h('td', null, i.sale_price ? `${Number(i.sale_price).toFixed(2)} €` : '—'),
+          h('td', null, canEdit ? h('div', null, h('button', { style: { padding: '8px 10px', border: '1px solid #ddd', background: '#fff', borderRadius: '8px', cursor: 'pointer', marginRight: '6px' }, onClick: () => sellItem(i) }, 'Продать'), i.status === 'sold' ? h('button', { style: { padding: '8px 10px', border: '1px solid #b91c1c', background: '#fff', color: '#b91c1c', borderRadius: '8px', cursor: 'pointer' }, onClick: () => cancelSale(i) }, 'Отмена') : null) : h('span', { style: { color: '#666' } }, 'read-only'))
+        )))
+      )
     ) : null,
     canEdit && page === 'activity' ? h('section', null,
       h('table', { style: { width: '100%', borderCollapse: 'collapse', marginTop: '10px' } },
