@@ -7,8 +7,9 @@ if (!ReactRef || !ReactDOMRef || !htmRef) throw new Error('Не удалось �
 const { useEffect, useMemo, useState } = ReactRef;
 const html = htmRef.bind(ReactRef.createElement);
 
-const loadStoredSession = () => { try { const raw = localStorage.getItem('crm_session_v1'); return raw ? JSON.parse(raw) : null; } catch (_) { return null; } };
-const saveStoredSession = (s) => s ? localStorage.setItem('crm_session_v1', JSON.stringify(s)) : localStorage.removeItem('crm_session_v1');
+const SESSION_STORAGE_KEY = 'crm_session_v1';
+const loadStoredSession = () => { try { const raw = localStorage.getItem(SESSION_STORAGE_KEY); return raw ? JSON.parse(raw) : null; } catch (_) { return null; } };
+const saveStoredSession = (s) => s ? localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(s)) : localStorage.removeItem(SESSION_STORAGE_KEY);
 
 
 
