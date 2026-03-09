@@ -102,7 +102,13 @@ function routeAction(action, payload) {
 function nowIso() { return new Date().toISOString(); }
 function toNum(v) { return Number(v || 0); }
 function boolText(v) { return ['true', '1', 'yes', 'да', 'y'].includes(String(v || '').toLowerCase()) ? 'yes' : 'no'; }
-function monthKey(v) { return String(v || '').slice(0, 7); }
+function monthKey(v) {
+  if (!v) return '';
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0');
+  }
+  return String(v).slice(0, 7);
+}
 function shippingStatus(v) { return ['pending', 'shipped', 'delivered', 'cancelled'].includes(String(v || '')) ? String(v) : 'pending'; }
 function normalizeIdentity(value) { return String(value || '').trim().toLowerCase(); }
 function randomId(prefix) { return [prefix, Utilities.getUuid().replace(/-/g, '')].join('_'); }
@@ -538,11 +544,13 @@ function getAnalytics() {
   sales.forEach((s) => {
     const m = monthKey(s.sale_date || s.timestamp);
     if (!m) return;
-    if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, potential_profit: 0, items: [] };
+    if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, profit_processing: 0, potential_profit: 0, items: [] };
     const pr = toNum(s.profit);
+    const received = boolText(s.money_received) === 'yes';
     monthly[m].sold_count += 1;
     monthly[m].revenue += toNum(s.sale_price);
-    monthly[m].profit += boolText(s.money_received) === 'yes' ? pr : 0;
+    monthly[m].profit += received ? pr : 0;
+    monthly[m].profit_processing += received ? 0 : pr;
     monthly[m].potential_profit += pr;
     monthly[m].items.push(s);
   });

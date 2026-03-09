@@ -147,3 +147,27 @@ input:focus, select:focus, textarea:focus {
 .text-emerald-800 { color: #065f46 !important; }
 .border-emerald-200 { border-color: #a7f3d0 !important; }
 .border-emerald-300 { border-color: #6ee7b7 !important; }
+
+/* Fix: Tailwind 2.x CDN does not support arbitrary value (JIT) syntax like z-[60], bg-[...], etc. */
+
+/* Modal z-index layers */
+.z-60 { z-index: 60; }
+.z-70 { z-index: 70; }
+
+/* Modal max-height constraint */
+.max-h-modal { max-height: calc(100vh - 2rem); }
+
+/* Semi-transparent overlay backgrounds (replaces bg-black/40 and bg-black/45) */
+.bg-overlay { background-color: rgba(0, 0, 0, 0.45); }
+.bg-overlay-light { background-color: rgba(0, 0, 0, 0.40); }
+
+/* Warm background accent used in item/sale info blocks */
+.bg-item-warm { background-color: #f5efe6; }
+
+/* Workspace switcher button hover — luxe accent background */
+.hover\:bg-luxe-accent:hover { background-color: #6e5238; }
+
+/* Active workspace button in switcher */
+.ws-btn-active { background-color: #6e5238; color: #fff; }
+.ws-btn-inactive { background-color: #f7f4ef; color: inherit; }
+.ws-btn-inactive:hover { background-color: #e8dfd3; }
