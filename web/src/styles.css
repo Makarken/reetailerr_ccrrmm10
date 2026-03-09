@@ -1,0 +1,63 @@
+* { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+:root {
+  --font-premium: 'SF Pro Text', 'SF Pro Display', 'Inter', 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+body {
+  font-family: var(--font-premium);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: 0.01em;
+  line-height: 1.45;
+}
+
+h1, h2, h3, .font-semibold {
+  letter-spacing: 0.005em;
+}
+
+.premium-card {
+  background: linear-gradient(150deg, #fffefb 0%, #f8f4ed 100%);
+  border: 1px solid #e4dacd;
+  box-shadow: 0 1px 0 rgba(80, 54, 31, 0.03);
+}
+
+.premium-sub {
+  background: #fffdf9;
+  border: 1px solid #eadfce;
+}
+
+.kpi-featured {
+  background: linear-gradient(140deg, #fff9ef 0%, #f7ecdb 100%);
+  border-color: #d9c6ad;
+}
+
+.inventory-row {
+  transition: background .18s ease, transform .18s ease;
+}
+.inventory-row:hover {
+  background: #fbf8f3;
+}
+
+.tap-btn {
+  min-height: 44px;
+  transition: all .2s ease;
+  font-weight: 500;
+}
+.tap-btn:active { transform: translateY(1px) scale(0.995); }
+
+input, select, textarea {
+  transition: all .18s ease;
+  font: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 4px rgba(130,107,82,.14);
+  outline: none;
+}
+
+.fade-in { animation: fade .25s ease; }
+@keyframes fade { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform:none;} }
+
+@media (max-width: 768px) {
+  body { font-size: 16px; }
+  .premium-card { border-radius: 16px; }
+}
