@@ -72,7 +72,10 @@ function routeAction(action, payload) {
     getRepairs: () => ({ ok: true, ...getRepairs(payload.month || '') }),
     getSalesByMonth: () => ({ ok: true, ...getSalesByMonth(payload.month || '') }),
     getItemByNumber: () => ({ ok: true, item: getItemByNumber(payload.item_number) }),
-    listWorkspaces: () => ({ ok: true, workspaces: CONFIG.WORKSPACES }),
+    listWorkspaces: () => ({ ok: true, workspaces: getActiveWorkspaces() }),
+    createWorkspace: () => ({ ok: true, workspace: createWorkspace(payload.name, payload.viewer_login, payload.viewer_password) }),
+    deleteWorkspace: () => ({ ok: true, ...deleteWorkspace(payload.workspace_id) }),
+    changeViewerCredentials: () => ({ ok: true, ...changeViewerCredentials(payload.workspace_id, payload.new_login, payload.new_password) }),
     switchWorkspace: () => ({ ok: true, ...switchWorkspace(payload.workspace_id || '') }),
     createPurchase: () => ({ ok: true, item: createPurchase(payload) }),
     recordSale: () => ({ ok: true, item: recordSale(payload) }),
@@ -89,7 +92,7 @@ function routeAction(action, payload) {
     deleteItem: () => ({ ok: true, deleted: deleteItem(payload.item_number) })
   };
 
-  const adminOnly = { createPurchase: 1, recordSale: 1, cancelSale: 1, editItem: 1, updateStatus: 1, updatePurchaseBalance: 1, updateShipping: 1, updateMoneyReceived: 1, sendToRepair: 1, completeRepair: 1, addRepairMaster: 1, deleteRepairMaster: 1, deleteItem: 1 };
+  const adminOnly = { createPurchase: 1, recordSale: 1, cancelSale: 1, editItem: 1, updateStatus: 1, updatePurchaseBalance: 1, updateShipping: 1, updateMoneyReceived: 1, sendToRepair: 1, completeRepair: 1, addRepairMaster: 1, deleteRepairMaster: 1, deleteItem: 1, createWorkspace: 1, deleteWorkspace: 1, changeViewerCredentials: 1 };
   if (adminOnly[action] && auth.role !== 'admin') throw new Error('Недостаточно прав для этого действия');
 
   if (!handlers[action]) throw new Error('Unknown action: ' + action);
@@ -104,7 +107,33 @@ function shippingStatus(v) { return ['pending', 'shipped', 'delivered', 'cancell
 function normalizeIdentity(value) { return String(value || '').trim().toLowerCase(); }
 function randomId(prefix) { return [prefix, Utilities.getUuid().replace(/-/g, '')].join('_'); }
 function activeWorkspaceId() { return REQUEST_CONTEXT && REQUEST_CONTEXT.workspace_id ? REQUEST_CONTEXT.workspace_id : ''; }
-function workspaceById(id) { return CONFIG.WORKSPACES.find((w) => w.id === id) || null; }
+function workspaceById(id) { return getActiveWorkspaces().find((w) => w.id === id) || null; }
+
+const GLOBAL_WS_ID = '__global__';
+function getGlobalSettingValue(key, fallback) {
+  try {
+    const rows = getRows(CONFIG.SHEETS.settings, CONFIG.HEADERS.settings);
+    const row = rows.find((r) => String(r.workspace_id) === GLOBAL_WS_ID && String(r.key) === String(key));
+    return row ? row.value : fallback;
+  } catch (_) { return fallback; }
+}
+function setGlobalSettingValue(key, value) {
+  const sh = getSheet(CONFIG.SHEETS.settings, CONFIG.HEADERS.settings);
+  const rows = getRows(CONFIG.SHEETS.settings, CONFIG.HEADERS.settings);
+  const idx = rows.findIndex((r) => String(r.workspace_id) === GLOBAL_WS_ID && String(r.key) === String(key));
+  if (idx < 0) { sh.appendRow(objToRow({ workspace_id: GLOBAL_WS_ID, key: String(key), value: String(value) }, CONFIG.HEADERS.settings)); return; }
+  sh.getRange(idx + 2, 1, 1, CONFIG.HEADERS.settings.length).setValues([objToRow({ workspace_id: GLOBAL_WS_ID, key: String(key), value: String(value) }, CONFIG.HEADERS.settings)]);
+}
+function getAllWorkspaces() {
+  const staticWs = CONFIG.WORKSPACES.map((w) => ({ ...w, is_static: true }));
+  try {
+    const raw = getGlobalSettingValue('workspaces_config', '[]');
+    const dynamic = JSON.parse(raw || '[]');
+    if (Array.isArray(dynamic)) return [...staticWs, ...dynamic.filter((w) => !staticWs.find((s) => s.id === w.id))];
+  } catch (_) {}
+  return staticWs;
+}
+function getActiveWorkspaces() { return getAllWorkspaces().filter((w) => !w.is_deleted); }
 
 function hashPassword(password, salt) {
   const raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, `${salt}:${password}`, Utilities.Charset.UTF_8);
@@ -145,7 +174,7 @@ function login(identity, password, userAgent, selectedWorkspaceId) {
   const expected = hashPassword(password, String(user.password_salt || ''));
   if (String(user.password_hash || '') !== expected) throw new Error('Неверные учётные данные');
 
-  const allowed = user.workspace_id === '*' ? CONFIG.WORKSPACES.map((w) => w.id) : [String(user.workspace_id)];
+  const allowed = user.workspace_id === '*' ? getActiveWorkspaces().map((w) => w.id) : [String(user.workspace_id)];
   if (!allowed.length) throw new Error('У пользователя не задана база');
 
   if (allowed.length > 1 && !selectedWorkspaceId) {
@@ -171,7 +200,6 @@ function login(identity, password, userAgent, selectedWorkspaceId) {
     }
   };
 }
-function getAuthUsers() { ensureDefaultUsers(); return getRows(CONFIG.AUTH.users, CONFIG.HEADERS.authUsers); }
 
 function getSessionInfo(token) {
   const t = String(token || '').trim();
@@ -405,6 +433,69 @@ function deleteItem(itemNumber) {
   return true;
 }
 function getActivity() { return scopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))); }
+function createWorkspace(name, viewerLogin, viewerPassword) {
+  const nm = String(name || '').trim();
+  const vl = String(viewerLogin || '').trim();
+  const vp = String(viewerPassword || '').trim();
+  if (!nm) throw new Error('Введите название базы');
+  if (!vl) throw new Error('Введите логин для зрителя');
+  if (vp.length < 3) throw new Error('Пароль должен быть не менее 3 символов');
+  const allWs = getAllWorkspaces();
+  if (allWs.find((w) => !w.is_deleted && normalizeIdentity(w.name) === normalizeIdentity(nm))) throw new Error('База с таким именем уже существует');
+  const loginTaken = getAuthUsers().find((u) => normalizeIdentity(u.login) === normalizeIdentity(vl));
+  if (loginTaken) throw new Error('Этот логин уже занят');
+  const wsId = randomId('workspace');
+  const dynamic = allWs.filter((w) => !w.is_static);
+  dynamic.push({ id: wsId, name: nm, is_deleted: false });
+  setGlobalSettingValue('workspaces_config', JSON.stringify(dynamic));
+  const userId = randomId('u');
+  const salt = randomId('salt');
+  appendRow(CONFIG.AUTH.users, CONFIG.HEADERS.authUsers, {
+    user_id: userId, login: vl, email: vl + '@crm.local',
+    password_hash: hashPassword(vp, salt), password_salt: salt,
+    workspace_id: wsId, role: 'viewer', is_active: 'yes',
+    created_at: nowIso(), updated_at: nowIso()
+  });
+  return { id: wsId, name: nm };
+}
+function deleteWorkspace(workspaceId) {
+  const ws = String(workspaceId || '').trim();
+  if (!ws) throw new Error('Не указана база');
+  const allWs = getAllWorkspaces();
+  const wsObj = allWs.find((w) => w.id === ws);
+  if (!wsObj) throw new Error('База не найдена');
+  if (wsObj.is_static) throw new Error('Нельзя удалить встроенную базу');
+  wsObj.is_deleted = true;
+  const dynamic = allWs.filter((w) => !w.is_static);
+  setGlobalSettingValue('workspaces_config', JSON.stringify(dynamic));
+  const sh = getSheet(CONFIG.AUTH.users, CONFIG.HEADERS.authUsers);
+  const users = getAuthUsers();
+  users.forEach((u, i) => {
+    if (String(u.workspace_id) === ws && u.role === 'viewer') {
+      const updated = Object.assign({}, u, { is_active: 'no', updated_at: nowIso() });
+      sh.getRange(i + 2, 1, 1, CONFIG.HEADERS.authUsers.length).setValues([objToRow(updated, CONFIG.HEADERS.authUsers)]);
+    }
+  });
+  return { deleted: ws };
+}
+function changeViewerCredentials(workspaceId, newLogin, newPassword) {
+  const ws = String(workspaceId || '').trim();
+  if (!ws) throw new Error('Не указана база');
+  const nm = String(newLogin || '').trim();
+  const pwd = String(newPassword || '').trim();
+  if (!nm) throw new Error('Введите новый логин');
+  if (pwd.length < 3) throw new Error('Пароль должен быть не менее 3 символов');
+  const users = getAuthUsers();
+  const userIdx = users.findIndex((u) => String(u.workspace_id) === ws && u.role === 'viewer' && boolText(u.is_active) !== 'no');
+  if (userIdx < 0) throw new Error('Зритель для этой базы не найден');
+  const loginTaken = users.find((u, i) => i !== userIdx && normalizeIdentity(u.login) === normalizeIdentity(nm));
+  if (loginTaken) throw new Error('Этот логин уже занят');
+  const newSalt = randomId('salt');
+  const updated = Object.assign({}, users[userIdx], { login: nm, email: nm + '@crm.local', password_hash: hashPassword(pwd, newSalt), password_salt: newSalt, updated_at: nowIso() });
+  const sh = getSheet(CONFIG.AUTH.users, CONFIG.HEADERS.authUsers);
+  sh.getRange(userIdx + 2, 1, 1, CONFIG.HEADERS.authUsers.length).setValues([objToRow(updated, CONFIG.HEADERS.authUsers)]);
+  return { login: updated.login };
+}
 function switchWorkspace(workspaceId) {
   const ws = String(workspaceId || '').trim();
   const found = workspaceById(ws);
@@ -481,10 +572,18 @@ function getShippingOverview() {
 }
 function getRepairs(month) {
   const m = monthKey(month) || monthKey(nowIso());
-  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'repair' || monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m);
+  const today = nowIso().slice(0, 10);
+  const rawItems = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'repair' || monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m);
+  const items = rawItems.map((i) => {
+    const sentDate = i.repair_sent_date ? new Date(i.repair_sent_date) : null;
+    const endDate = new Date(today);
+    const repair_days = sentDate && !isNaN(sentDate.getTime()) ? Math.max(0, Math.floor((endDate - sentDate) / 86400000)) : 0;
+    return Object.assign({}, i, { repair_days });
+  });
   const masters = getRepairMasters();
-  const stats = { sent: items.filter((i) => monthKey(i.repair_sent_date) === m).length, completed: items.filter((i) => monthKey(i.repair_finished_date) === m).length, spend: items.reduce((a, i) => a + toNum(i.repair_cost), 0) };
-  return { month: m, items, masters, stats };
+  const spent_this_month = items.filter((i) => monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m).reduce((a, i) => a + toNum(i.repair_cost), 0);
+  const stats = { sent: items.filter((i) => monthKey(i.repair_sent_date) === m).length, completed: items.filter((i) => monthKey(i.repair_finished_date) === m).length, spend: spent_this_month };
+  return { month: m, items, masters, stats, spent_this_month };
 }
 function getRepairMasters() {
   const raw = String(getSettingValue('repair_masters', '[]') || '[]');
