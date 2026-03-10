@@ -216,7 +216,7 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   const [showWorkspaceSwitcher, setShowWorkspaceSwitcher] = useState(false);
   const isViewer = session?.user?.role === 'viewer';
   const isAdmin = session?.user?.role === 'admin';
-  const [purchaseBalanceInput, setPurchaseBalanceInput] = useState('0');
+  const [purchaseBalanceInput, setPurchaseBalanceInput] = useState('');
   const [repairData, setRepairData] = useState({ items: [], masters: [] });
   const [repairTarget, setRepairTarget] = useState(null);
   const [repairCardItem, setRepairCardItem] = useState(null);
@@ -304,7 +304,11 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   }, [page]);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 2400); return () => clearTimeout(t); }, [toast]);
-  useEffect(() => { setPurchaseBalanceInput(String(Number(dashboard.purchase_balance_base || 0))); }, [dashboard.purchase_balance_base]);
+  useEffect(() => {
+    // Use the explicit is_set flag so that base=0 is correctly shown as '0'
+    // rather than being treated the same as "no base set".
+    setPurchaseBalanceInput(dashboard.purchase_balance_base_is_set ? String(Number(dashboard.purchase_balance_base)) : '');
+  }, [dashboard.purchase_balance_base, dashboard.purchase_balance_base_is_set]);
 
   // ── Derived state (QC computed client-side from items – no extra API call) ─
   const attention = useMemo(() => {
@@ -458,7 +462,9 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   };
 
   const savePurchaseBalance = async () => {
-    await api('updatePurchaseBalance', { value: Number(purchaseBalanceInput || 0) });
+    // Treat empty input as 0 so typing nothing and saving correctly sets base to 0.
+    const v = purchaseBalanceInput === '' ? 0 : Number(purchaseBalanceInput);
+    await api('updatePurchaseBalance', { value: v });
     setToast('Остаток закупа обновлён');
     loadAll();
   };
@@ -607,7 +613,7 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
         ['⚠️', 'Требуют внимания', dashboard.attention_count || 0]
       ]).map(([i, t, v]) => html`<div className="premium-card rounded-2xl p-4"><p className="text-xs text-luxe-muted">${i} ${t}</p><p className="text-lg font-semibold mt-1">${v}</p></div>`)}</div>
       ${isViewer && html`<button className="tap-btn w-full premium-card rounded-2xl p-4 text-left" onClick=${() => setPage('analytics')}><p className="text-base font-semibold">📈 Аналитика</p><p className="text-xs text-luxe-muted mt-1">Месячная и годовая статистика продаж</p></button>`}
-      ${!isViewer && html`<div className="premium-card rounded-2xl p-4"><p className="text-sm font-medium">Установить базу остатка закупа</p><p className="text-xs text-luxe-muted mt-1">Зафиксируйте текущий остаток вручную. После этого: покупки уменьшают остаток, продажи с зашедшими деньгами возвращают.</p>${dashboard.purchase_balance_base_at && html`<p className="text-xs text-luxe-muted mt-1">Последняя корректировка: ${formatDate(dashboard.purchase_balance_base_at)}</p>`}<div className="mt-2 flex gap-2"><input type="number" className="rounded-xl border border-luxe-border p-2 bg-white w-44" value=${purchaseBalanceInput} onInput=${(e) => setPurchaseBalanceInput(e.target.value)}/><button className="tap-btn rounded-xl border border-luxe-border px-3 py-2" onClick=${savePurchaseBalance}>Сохранить</button></div></div>`}
+      ${!isViewer && html`<div className="premium-card rounded-2xl p-4"><p className="text-sm font-medium">Установить базу остатка закупа</p><p className="text-xs text-luxe-muted mt-1">Зафиксируйте текущий остаток вручную. После этого: покупки уменьшают остаток, продажи с зашедшими деньгами возвращают.</p>${!dashboard.purchase_balance_base_is_set && html`<p className="text-xs text-orange-500 mt-1">База не установлена — остаток считается автоматически по текущим товарам.</p>`}${dashboard.purchase_balance_base_is_set && dashboard.purchase_balance_base_at && html`<p className="text-xs text-luxe-muted mt-1">Последняя корректировка: ${formatDate(dashboard.purchase_balance_base_at)}</p>`}<div className="mt-2 flex gap-2"><input type="number" className="rounded-xl border border-luxe-border p-2 bg-white w-44" placeholder="0" value=${purchaseBalanceInput} onInput=${(e) => setPurchaseBalanceInput(e.target.value)}/><button className="tap-btn rounded-xl border border-luxe-border px-3 py-2" onClick=${savePurchaseBalance}>Сохранить</button></div></div>`}
       ${!isViewer && html`<div className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Ожидают отправки / доставки</h2><ul className="mt-2 text-sm space-y-2">${(shippingOverview.items || []).slice(0, 7).map((s) => html`<li className="border-b border-luxe-border/60 pb-2">№${s.item_number} · ${s.platform || '—'} · ${formatDate(s.sale_date)} · <${ShippingBadge} status=${s.shipping_status}/></li>`)}</ul></div>`}</section>`}
 
       ${!loading && page === 'inventory' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-3 grid grid-cols-1 md:grid-cols-3 gap-2 items-end"><div className="md:col-span-2"><label className="text-xs text-luxe-muted">Поиск</label><input className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Номер или модель"/></div><div><label className="text-xs text-luxe-muted">Статус</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white text-slate-900" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>${isViewer ? [['all', 'Все'], ['in_stock', 'В наличии'], ['sold', 'Продано']].map(([k, v]) => html`<option value=${k}>${v}</option>`) : [html`<option value="all">Все</option>`, ...Object.entries(STATUS_META).map(([k, v]) => html`<option value=${k}>${v.label}</option>`)]}</select></div><div><label className="text-xs text-luxe-muted">Вид</label><select className="w-full rounded-xl border border-luxe-border p-2 bg-white" value=${inventoryView} onChange=${(e) => setInventoryView(e.target.value)}><option value="list">Списком</option><option value="grid-sm">Плитка маленькая</option><option value="grid-lg">Плитка большая</option></select></div></div>
