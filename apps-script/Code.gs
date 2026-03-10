@@ -36,6 +36,42 @@ const CONFIG = {
 
 let REQUEST_CONTEXT = null;
 
+// ── CacheService read-through layer ──────────────────────────────────────────
+// Short TTL keeps data fresh while eliminating redundant sheet reads within
+// a rolling time window (e.g. getDashboard + getQC + getRepairs in one session).
+const CACHE_TTL_SECONDS = 20;
+
+function _cacheKey(sheetName) {
+  // Cache is scoped per workspace so different workspaces never see each other's data.
+  const ws = activeWorkspaceId() || '__global__';
+  return 'crm_v1_' + ws + '_' + sheetName;
+}
+
+function getCachedScopedRows(sheetName, headers) {
+  const key = _cacheKey(sheetName);
+  try {
+    const cache = CacheService.getScriptCache();
+    const raw = cache.get(key);
+    if (raw) return JSON.parse(raw);
+    const rows = scopedRows(sheetName, headers);
+    const json = JSON.stringify(rows);
+    // CacheService hard limit is 100 KB per entry; stay safely under it.
+    if (json.length < 95000) cache.put(key, json, CACHE_TTL_SECONDS);
+    return rows;
+  } catch (_) {
+    return scopedRows(sheetName, headers);
+  }
+}
+
+function invalidateSheetsCache() {
+  // Called after every mutation to force fresh reads within the TTL window.
+  const ws = activeWorkspaceId() || '__global__';
+  const cache = CacheService.getScriptCache();
+  [CONFIG.SHEETS.inventory, CONFIG.SHEETS.sales, CONFIG.SHEETS.activity].forEach((name) => {
+    try { cache.remove('crm_v1_' + ws + '_' + name); } catch (_) {}
+  });
+}
+
 function doGet(e) { return safeRoute(String((e && e.parameter && e.parameter.action) || ''), (e && e.parameter) || {}); }
 function doPost(e) {
   try {
@@ -63,7 +99,7 @@ function routeAction(action, payload) {
   REQUEST_CONTEXT = auth;
 
   const handlers = {
-    getInventory: () => ({ ok: true, items: scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory) }),
+    getInventory: () => ({ ok: true, items: getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory) }),
     getDashboard: () => ({ ok: true, stats: getDashboard() }),
     getActivity: () => ({ ok: true, activity: getActivity() }),
     getAnalytics: () => ({ ok: true, ...getAnalytics() }),
@@ -315,13 +351,17 @@ function createPurchase(payload) {
   if (getItemByNumber(item.item_number)) throw new Error('Такой номер уже существует');
   appendRow(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory, item);
   addActivity(item.item_number, 'Добавление покупки', 'card', '', 'created');
+  invalidateSheetsCache();
   return item;
 }
 function recordSale(payload) {
   const item = getItemByNumber(assertNumericItemNumber(payload.item_number));
   if (!item) throw new Error('Товар не найден');
+  // Dual guard: check both status and sale_id to prevent duplicate sales
   if (String(item.status) === 'sold') throw new Error('Товар уже продан. Сначала отмените продажу.');
+  if (String(item.sale_id || '')) throw new Error('У товара уже есть активная продажа. Сначала отмените её.');
   const salePrice = toNum(payload.sale_price);
+  if (salePrice <= 0) throw new Error('Цена продажи должна быть больше нуля');
   const saleDate = String(payload.sale_date || nowIso().slice(0, 10));
   const platform = String(payload.platform || item.platform || 'Vinted');
   const fee = toNum(payload.platform_fee);
@@ -367,11 +407,13 @@ function recordSale(payload) {
   });
 
   addActivity(item.item_number, 'Оформление продажи', 'sale', '', String(item.sale_price));
+  invalidateSheetsCache();
   return item;
 }
 function cancelSale(itemNumber, saleId) {
   const item = getItemByNumber(itemNumber);
   if (!item) throw new Error('Товар не найден');
+  if (String(item.status) !== 'sold' && !String(item.sale_id || '')) throw new Error('Этот товар не продан');
 
   const sales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales);
   const sale = (saleId && sales.find((s) => String(s.sale_id) === String(saleId)))
@@ -397,12 +439,13 @@ function cancelSale(itemNumber, saleId) {
   item.updated_at = nowIso();
   saveInventoryItem(item);
   addActivity(item.item_number, 'Отмена продажи', 'sale', 'sold', restoredStatus);
+  invalidateSheetsCache();
   return item;
 }
 
 function getSalesByMonth(month) {
   const m = monthKey(month) || monthKey(nowIso());
-  const all = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
+  const all = getCachedScopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
   const items = all.filter((s) => monthKey(s.sale_date) === m);
   const summary = {
     sold_count: items.length,
@@ -421,6 +464,7 @@ function updateStatus(itemNumber, status) {
   item.updated_at = nowIso();
   saveInventoryItem(item);
   addActivity(item.item_number, 'Изменение статуса', 'status', prev, item.status);
+  invalidateSheetsCache();
   return item;
 }
 function editItem(itemNumber, updates) {
@@ -443,6 +487,7 @@ function editItem(itemNumber, updates) {
   saveInventoryItem(item);
   syncSaleRecord(item);
   addActivity(item.item_number, 'Редактирование карточки', 'card', '', 'updated');
+  invalidateSheetsCache();
   return item;
 }
 function updatePurchaseBalanceManual(value) {
@@ -456,9 +501,10 @@ function deleteItem(itemNumber) {
   deleteRowsWhere(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory, (r) => String(r.workspace_id) === ws && String(r.item_number) === key);
   deleteRowsWhere(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales, (r) => String(r.workspace_id) === ws && String(r.item_number) === key);
   addActivity(key, 'Удаление карточки', 'card', 'exists', 'deleted');
+  invalidateSheetsCache();
   return true;
 }
-function getActivity() { return scopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 200); }
+function getActivity() { return getCachedScopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 200); }
 function createWorkspace(name, viewerLogin, viewerPassword) {
   const nm = String(name || '').trim();
   const vl = String(viewerLogin || '').trim();
@@ -534,7 +580,7 @@ function switchWorkspace(workspaceId) {
   return { workspace_id: ws, workspace_name: found.name };
 }
 function getDashboard() {
-  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
+  const items = getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
   const active = items.filter((i) => !['sold', 'cancelled'].includes(String(i.status)));
   const purchaseBalanceManualStr = getSettingValue('purchase_balance_manual', null);
@@ -552,7 +598,7 @@ function getDashboard() {
   const oldestItem = activeWithAge.length > 0 ? activeWithAge.reduce((best, i) => storageStartDayGs(i) > storageStartDayGs(best) ? i : best, activeWithAge[0]) : null;
   const oldestDays = oldestItem ? storageStartDayGs(oldestItem) : 0;
 
-  const allSales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
+  const allSales = getCachedScopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
   const monthlyRoiMap = {};
   allSales.forEach((s) => {
     const m = monthKey(s.sale_date);
@@ -595,7 +641,7 @@ function storageStartDayGs(item) {
 }
 
 function getAnalytics() {
-  const sales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
+  const sales = getCachedScopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
   const monthly = {};
   sales.forEach((s) => {
     const m = monthKey(s.sale_date);
@@ -622,7 +668,7 @@ function getAnalytics() {
   return { monthly };
 }
 function getQC() {
-  return getQCFromItems(scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory));
+  return getQCFromItems(getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory));
 }
 function getQCFromItems(items) {
   // Statuses where the item is physically present and should be listed for sale
@@ -670,7 +716,7 @@ function getQCFromItems(items) {
   return out;
 }
 function getShippingOverview() {
-  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes');
+  const items = getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes');
   const summary = { pending: 0, shipped: 0, delivered: 0, cancelled: 0 };
   items.forEach((i) => { summary[shippingStatus(i.shipping_status)] += 1; });
   return { summary, items };
@@ -678,7 +724,7 @@ function getShippingOverview() {
 function getRepairs(month) {
   const m = monthKey(month) || monthKey(nowIso());
   const today = nowIso().slice(0, 10);
-  const rawItems = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'repair' || monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m);
+  const rawItems = getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'repair' || monthKey(i.repair_sent_date) === m || monthKey(i.repair_finished_date) === m);
   const items = rawItems.map((i) => {
     const sentDate = i.repair_sent_date ? new Date(i.repair_sent_date) : null;
     const endDate = new Date(today);
@@ -719,6 +765,7 @@ function updateShipping(itemNumber, shipping) {
   saveInventoryItem(item);
   syncSaleRecord(item);
   addActivity(item.item_number, 'Обновление доставки', 'shipping', '', item.shipping_status);
+  invalidateSheetsCache();
   return item;
 }
 function updateMoneyReceived(itemNumber, moneyReceived, saleId) {
@@ -741,6 +788,7 @@ function updateMoneyReceived(itemNumber, moneyReceived, saleId) {
     }
   }
   addActivity(item.item_number, 'Обновление оплаты', 'money_received', '', item.money_received);
+  invalidateSheetsCache();
   return item;
 }
 function sendToRepair(itemNumber, masterIdOrName) {
@@ -755,6 +803,7 @@ function sendToRepair(itemNumber, masterIdOrName) {
   item.updated_at = nowIso();
   saveInventoryItem(item);
   addActivity(item.item_number, 'Отправка в ремонт', 'status', '', 'repair');
+  invalidateSheetsCache();
   return item;
 }
 function completeRepair(itemNumber, repairCost) {
@@ -767,6 +816,7 @@ function completeRepair(itemNumber, repairCost) {
   item.updated_at = nowIso();
   saveInventoryItem(item);
   addActivity(item.item_number, 'Ремонт выполнен', 'repair', '', 'ready');
+  invalidateSheetsCache();
   return item;
 }
 

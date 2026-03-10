@@ -4,7 +4,7 @@ const ReactRef = window.React;
 const ReactDOMRef = window.ReactDOM;
 const htmRef = window.htm;
 if (!ReactRef || !ReactDOMRef || !htmRef) throw new Error('Не удалось загрузить React/ReactDOM/htm из CDN.');
-const { useEffect, useMemo, useState } = ReactRef;
+const { useEffect, useMemo, useRef, useState } = ReactRef;
 const html = htmRef.bind(ReactRef.createElement);
 
 const SESSION_STORAGE_KEY = 'crm_session_v1';
@@ -197,7 +197,6 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   const [dashboard, setDashboard] = useState({});
   const [activity, setActivity] = useState([]);
   const [analytics, setAnalytics] = useState({ monthly: {} });
-  const [attention, setAttention] = useState([]);
   const [shippingOverview, setShippingOverview] = useState({ summary: {}, items: [] });
   const [monthSales, setMonthSales] = useState({ month: '', items: [], summary: {} });
   const [query, setQuery] = useState('');
@@ -223,36 +222,30 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   const [repairCardItem, setRepairCardItem] = useState(null);
   const [repairMonth, setRepairMonth] = useState(new Date().toISOString().slice(0, 7));
   const [dialogState, setDialogState] = useState(null);
+  // Tab-loaded refs – track which secondary tabs have fetched their data at least once.
+  // Using refs (not state) so that marking a tab as loaded never triggers an unwanted re-render
+  // and effects that read these values don't need them in their dependency arrays.
+  const salesLoadedRef = useRef(false);
+  const analyticsLoadedRef = useRef(false);
+  const activityLoadedRef = useRef(false);
+  const repairLoadedRef = useRef(false);
 
   const showConfirm = (message) => new Promise((resolve) => setDialogState({ type: 'confirm', message, resolve }));
   const showPrompt = (message, defaultValue = '') => new Promise((resolve) => setDialogState({ type: 'prompt', message, inputValue: String(defaultValue), resolve }));
 
+  // ── Core loader: only fetches inventory + dashboard + shippingOverview ────
   const loadAll = async () => {
     setLoading(true);
     setError('');
     try {
-      const [i, d, a, an, qc, sh, rep] = await Promise.all([
+      const [i, d, sh] = await Promise.all([
         api('getInventory'),
         api('getDashboard'),
-        api('getActivity'),
-        api('getAnalytics'),
-        api('getQC'),
-        api('getShippingOverview'),
-        api('getRepairs', { month: repairMonth })
+        api('getShippingOverview')
       ]);
       setItems(i.items || []);
       setDashboard(d.stats || {});
-      setActivity(a.activity || []);
-      setAnalytics(an || { monthly: {} });
-      setAttention(qc.attention || []);
-      setRepairData(rep || { items: [], masters: [] });
-
-      const sm = await api('getSalesByMonth', { month: salesMonth });
-
-      setMonthSales(sm || { month: salesMonth, items: [], summary: {} });
-
       setShippingOverview(sh || { summary: {}, items: [] });
-      
       if (isAdmin) {
         try {
           const wl = await api('listWorkspaces');
@@ -268,9 +261,84 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
     }
   };
 
-  useEffect(() => { loadAll(); }, [salesMonth, repairMonth]);
+  // ── Targeted tab loaders ──────────────────────────────────────────────────
+  const reloadSales = async (month) => {
+    try {
+      const sm = await api('getSalesByMonth', { month });
+      setMonthSales(sm || { month, items: [], summary: {} });
+    } catch (e) { console.warn('reloadSales:', e.message); }
+  };
+  const reloadAnalytics = async () => {
+    try {
+      const an = await api('getAnalytics');
+      setAnalytics(an || { monthly: {} });
+    } catch (e) { console.warn('reloadAnalytics:', e.message); }
+  };
+  const reloadActivity = async () => {
+    try {
+      const a = await api('getActivity');
+      setActivity(a.activity || []);
+    } catch (e) { console.warn('reloadActivity:', e.message); }
+  };
+  const reloadRepairs = async (month) => {
+    try {
+      const rep = await api('getRepairs', { month });
+      setRepairData(rep || { items: [], masters: [] });
+    } catch (e) { console.warn('reloadRepairs:', e.message); }
+  };
+
+  // ── Effects ───────────────────────────────────────────────────────────────
+  // Initial load: core data only
+  useEffect(() => { loadAll(); }, []);
+
+  // Month pickers trigger only their own tab's reload (not the full app)
+  useEffect(() => { if (salesLoadedRef.current) reloadSales(salesMonth); }, [salesMonth]);
+  useEffect(() => { if (repairLoadedRef.current) reloadRepairs(repairMonth); }, [repairMonth]);
+
+  // Lazy tab loading: fetch data on first visit to each secondary tab
+  useEffect(() => {
+    if (page === 'sales' && !salesLoadedRef.current) { salesLoadedRef.current = true; reloadSales(salesMonth); }
+    else if (page === 'analytics' && !analyticsLoadedRef.current) { analyticsLoadedRef.current = true; reloadAnalytics(); }
+    else if (page === 'activity' && !activityLoadedRef.current) { activityLoadedRef.current = true; reloadActivity(); }
+    else if (page === 'repair' && !repairLoadedRef.current) { repairLoadedRef.current = true; reloadRepairs(repairMonth); }
+  }, [page]);
+
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 2400); return () => clearTimeout(t); }, [toast]);
   useEffect(() => { setPurchaseBalanceInput(String(Number(dashboard.purchase_balance || 0))); }, [dashboard.purchase_balance]);
+
+  // ── Derived state (QC computed client-side from items – no extra API call) ─
+  const attention = useMemo(() => {
+    const today = new Date();
+    const MS = 86400000;
+    const MAX_R = 14;
+    const LISTABLE = { ready: 1, listed: 1, hold: 1 };
+    const out = [];
+    items.forEach((i) => {
+      const st = String(i.status || '');
+      if (st === 'sold' && boolText(i.money_received) === 'yes' && String(i.shipping_status || '') === 'delivered') return;
+      const reasons = [];
+      if (!String(i.photo_url || '').trim()) reasons.push('Нет фото');
+      if (LISTABLE[st]) {
+        if (!String(i.description || '').trim()) reasons.push('Нет описания');
+        if (boolText(i.listed_vinted) !== 'yes' && boolText(i.listed_vestiaire) !== 'yes') reasons.push('Не выставлено ни на Vinted, ни на Vestiaire');
+      }
+      if (st !== 'cancelled' && boolText(i.need_rephoto) === 'yes') reasons.push('Нужно перефото');
+      if (st === 'sold') {
+        if (boolText(i.money_received) !== 'yes') reasons.push('Продано, но деньги не зашли');
+        if (String(i.shipping_status || 'pending') === 'pending') reasons.push('Продано, но не отправлено');
+      }
+      if (String(i.shipping_status || '') === 'shipped') reasons.push('Отправлено, но не доставлено');
+      if (st === 'repair' && i.repair_sent_date) {
+        const d = new Date(i.repair_sent_date);
+        if (!isNaN(d.getTime())) {
+          const days = Math.floor((today.getTime() - d.getTime()) / MS);
+          if (days > MAX_R) reasons.push('В ремонте более ' + days + ' дней');
+        }
+      }
+      if (reasons.length) out.push({ item_number: i.item_number, model_name: i.model_name, reasons, photo_url: i.photo_url, status: i.status });
+    });
+    return out;
+  }, [items]);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -311,6 +379,16 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
     return msg;
   };
 
+  // ── Refresh button: reloads core + whichever tab is currently open ────────
+  const handleRefresh = async () => {
+    await loadAll();
+    if (page === 'sales') { salesLoadedRef.current = true; await reloadSales(salesMonth); }
+    else if (page === 'analytics') { analyticsLoadedRef.current = true; await reloadAnalytics(); }
+    else if (page === 'activity') { activityLoadedRef.current = true; await reloadActivity(); }
+    else if (page === 'repair') { repairLoadedRef.current = true; await reloadRepairs(repairMonth); }
+  };
+
+  // ── Mutation handlers ─────────────────────────────────────────────────────
   const savePurchase = async (payload) => {
     try {
       setError('');
@@ -342,9 +420,12 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
       setShowSale(false);
       setShowFabMenu(false);
       setToast('Продажа сохранена');
-      setSalesMonth(new Date().toISOString().slice(0, 7));
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      setSalesMonth(thisMonth);
+      salesLoadedRef.current = true;
       setPage('sales');
-      loadAll();
+      await loadAll();
+      await reloadSales(thisMonth);
     } catch (e) {
       setError('Ошибка сохранения продажи: ' + humanError(e, 'Не удалось сохранить продажу'));
     }
@@ -357,7 +438,8 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
     if (!await showConfirm(`Отменить продажу товара №${itemNumber}?`)) return;
     await api('cancelSale', { item_number: itemNumber, sale_id: saleId });
     setToast('Продажа отменена');
-    loadAll();
+    await loadAll();
+    if (salesLoadedRef.current) await reloadSales(salesMonth);
   };
 
   const deleteItem = async (itemNumber) => {
@@ -371,7 +453,8 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   const toggleMoneyReceived = async (itemNumber, checked, saleId) => {
     await api('updateMoneyReceived', { item_number: itemNumber, money_received: checked ? 'yes' : 'no', sale_id: saleId || '' });
     setToast('Оплата обновлена');
-    loadAll();
+    await loadAll();
+    if (salesLoadedRef.current) await reloadSales(salesMonth);
   };
 
   const savePurchaseBalance = async () => {
@@ -382,7 +465,8 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
   const sendToRepair = async (itemNumber, masterId) => {
     await api('sendToRepair', { item_number: itemNumber, master_id: masterId });
     setToast('Товар отправлен в ремонт');
-    loadAll();
+    await loadAll();
+    if (repairLoadedRef.current) await reloadRepairs(repairMonth);
   };
   const completeRepair = async (itemNumber, repairCost = null) => {
     let value = repairCost;
@@ -392,7 +476,8 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
     }
     await api('completeRepair', { item_number: itemNumber, repair_cost: Number(value || 0) });
     setToast('Ремонт завершен');
-    loadAll();
+    await loadAll();
+    if (repairLoadedRef.current) await reloadRepairs(repairMonth);
   };
   const addMaster = async () => {
     const name = await showPrompt('Имя мастера');
@@ -400,12 +485,12 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
     const city = await showPrompt('Город мастера (необязательно)', '');
     await api('addRepairMaster', { name, city: city || '' });
     setToast('Мастер добавлен');
-    loadAll();
+    if (repairLoadedRef.current) await reloadRepairs(repairMonth);
   };
   const deleteMaster = async (id) => {
     await api('deleteRepairMaster', { id });
     setToast('Мастер удален');
-    loadAll();
+    if (repairLoadedRef.current) await reloadRepairs(repairMonth);
   };
 
   const openFromMenu = (nextPage) => {
@@ -422,6 +507,16 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
       }
       setToast('База переключена');
       setShowWorkspaceSwitcher(false);
+      // Reset all tab loaded refs and clear secondary data so stale data isn't shown
+      salesLoadedRef.current = false;
+      analyticsLoadedRef.current = false;
+      activityLoadedRef.current = false;
+      repairLoadedRef.current = false;
+      setMonthSales({ month: salesMonth, items: [], summary: {} });
+      setAnalytics({ monthly: {} });
+      setActivity([]);
+      setRepairData({ items: [], masters: [] });
+      setPage('dashboard');
       loadAll();
     } catch (e) {
       setError('Ошибка переключения базы: ' + e.message);
@@ -476,7 +571,7 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
         ${isAdmin && workspaceList.length > 1 ? html`<button className="tap-btn rounded-xl border border-luxe-border bg-white px-2 py-1 text-xs" onClick=${() => setShowWorkspaceSwitcher(true)}>🔄</button>` : html``}
       </div>
       <div className="flex items-center gap-2">
-        <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${loadAll}>Обновить</button>
+        <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${handleRefresh}>Обновить</button>
         <button className="tap-btn rounded-xl border border-luxe-border bg-white px-3 py-2 text-sm" onClick=${async () => { if (await showConfirm('Выйти из аккаунта?')) onLogout(); }}>Выход</button>
       </div>
     </header>
@@ -528,7 +623,7 @@ function CrmApp({ onLogout, session, onSessionUpdate }) {
       </div></section>`}
       ${!loading && page === 'qc' && html`<section className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Контроль качества</h2><ul className="mt-2 text-sm space-y-2">${attention.map((i) => html`<li className="border-b border-luxe-border/60 pb-2"><button className="w-full text-left" onClick=${() => setSelected(items.find((x) => String(x.item_number) === String(i.item_number)) || null)}><div className="flex gap-2"><img src=${i.photo_url || i.item?.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=160'} className="w-12 h-12 rounded-lg object-contain bg-white border border-luxe-border"/><div><p><b>№ ${i.item_number}</b> · ${i.model_name || '—'}</p><p className="text-luxe-muted">Причины: ${(Array.isArray(i.reasons) ? i.reasons : []).map((r) => String(r?.label || r || '')).filter(Boolean).join(' · ') || '—'}</p></div></div></button></li>`)}</ul></section>`}
       ${!loading && page === 'repair' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">Ремонт</h2><div className="flex items-center gap-2"><input type="month" className="rounded-lg border border-luxe-border p-1 bg-white" value=${repairMonth} onInput=${(e) => setRepairMonth(e.target.value)}/><button className="tap-btn rounded-lg border border-luxe-border px-3 py-1" onClick=${addMaster}>Добавить мастера</button></div></div><p className="text-sm text-luxe-muted mt-2">Потрачено на ремонт за месяц: <b>${money(repairData.spent_this_month || repairData.stats?.spend || 0)}</b></p><ul className="mt-2 text-sm space-y-1">${(repairData.masters || []).map((m) => html`<li className="flex justify-between border-b border-luxe-border/60 pb-1"><span>${m.name} ${m.city ? `(${m.city})` : ''}</span><button className="text-rose-700" onClick=${() => deleteMaster(m.id)}>Удалить</button></li>`)}</ul></div><div className="space-y-2">${(repairData.items || []).map((i) => html`<article className="premium-card rounded-2xl p-3"><div className="flex gap-3"><img src=${i.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=160'} className="w-16 h-16 rounded-lg object-contain bg-white border border-luxe-border"/><div><p className="font-semibold">№${i.item_number} · ${i.model_name || '—'}</p><p className="text-sm text-luxe-muted">Мастер: ${i.repair_master || '—'}</p><p className="text-sm text-luxe-muted">Отправлено: ${formatDate(i.repair_sent_date)}</p><p className=${`text-sm ${i.repair_days > 14 ? 'text-rose-700' : 'text-luxe-muted'}`}>В ремонте: ${i.repair_days || 0} дн.</p></div></div><div className="flex gap-2 mt-2"><button className="tap-btn rounded-lg border border-luxe-border px-3 py-1 text-sm" onClick=${() => setRepairCardItem(i)}>Открыть</button><button className="tap-btn rounded-lg px-3 py-1 text-sm text-white" style=${{ background: '#047857' }} onClick=${() => completeRepair(i.item_number)}>Ремонт выполнен</button></div></article>`)}</div></section>`}
-      ${!loading && page === 'activity' && html`<section className="premium-card rounded-2xl p-4 overflow-auto"><table className="min-w-[760px] w-full text-sm"><thead><tr className="text-xs text-luxe-muted"><th className="text-left">Время</th><th>Номер</th><th>Действие</th><th className="text-left">Описание</th></tr></thead><tbody>${activity.map((a) => html`<tr className="border-t border-luxe-border/60"><td className="py-2">${new Date(a.timestamp).toLocaleString('ru-RU')}</td><td>${a.item_number}</td><td>${a.action}</td><td>${a.description || '—'}</td></tr>`)}</tbody></table></section>`}
+      ${!loading && page === 'activity' && html`<section className="premium-card rounded-2xl p-4 overflow-auto"><table className="min-w-[760px] w-full text-sm"><thead><tr className="text-xs text-luxe-muted"><th className="text-left">Время</th><th>Номер</th><th>Действие</th><th className="text-left">Детали</th></tr></thead><tbody>${activity.map((a) => html`<tr className="border-t border-luxe-border/60"><td className="py-2">${new Date(a.timestamp).toLocaleString('ru-RU')}</td><td>${a.item_number}</td><td>${a.action}</td><td>${a.new_value ? (a.old_value ? `${a.old_value} → ${a.new_value}` : String(a.new_value)) : '—'}</td></tr>`)}</tbody></table></section>`}
       ${!loading && page === 'rephoto' && html`<section className="space-y-3"><div className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Товары на перефото</h2><p className="text-sm text-luxe-muted mt-1">Всего: ${rephotoItems.length}</p></div>${rephotoItems.map((i) => html`<article className="premium-card rounded-2xl p-3"><div className="flex gap-2 items-start"><img src=${i.photo_url || 'https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=120'} className="w-12 h-12 rounded-lg object-contain bg-white border border-luxe-border"/><div><p className="font-semibold">№${i.item_number} · ${i.model_name || '—'}</p><p className="text-sm text-luxe-muted">${i.category || '—'}</p></div></div><button className="tap-btn mt-2 rounded-lg bg-luxe-accent text-white px-3 py-1.5 text-xs" onClick=${() => setSelected(i)}>Открыть</button></article>`)}</section>`}
       ${!loading && page === 'settings' && html`<section className="premium-card rounded-2xl p-4"><h2 className="font-semibold">Настройки</h2><p className="mt-2 text-sm text-luxe-muted">API подключен через Apps Script URL из <code>src/config.js</code>.</p><button className="tap-btn mt-3 rounded-lg border border-luxe-border px-3 py-2 text-sm" onClick=${loadAll}>Обновить данные</button></section>`}
     </main>
