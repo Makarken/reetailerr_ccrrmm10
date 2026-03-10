@@ -491,8 +491,66 @@ function editItem(itemNumber, updates) {
   return item;
 }
 function updatePurchaseBalanceManual(value) {
-  setSettingValue('purchase_balance_manual', String(toNum(value)));
-  return toNum(value);
+  const v = toNum(value);
+  setSettingValue('purchase_balance_base', String(v));
+  setSettingValue('purchase_balance_base_at', nowIso());
+  return v;
+}
+
+/**
+ * Compute purchase balance using manual base + automatic movements.
+ *
+ * Formula:
+ *   balance = base
+ *             - Σ cost of ACTIVE items purchased ON or AFTER base date
+ *             - Σ cost of SOLD (money_received=NO) items purchased ON or AFTER base date
+ *               (money not yet received → cost still "locked")
+ *             + Σ cost of SOLD (money_received=YES) items purchased BEFORE base date
+ *               but sold ON or AFTER base date
+ *               (pre-base stock that was "in the base" now returns its cost)
+ *
+ * Items purchased AFTER base that sell WITH money received cancel out (net=0):
+ *   they leave the active deduction when sold, and are not in any addback.
+ *
+ * Backward compatibility: if no new base is found but the legacy
+ * purchase_balance_manual key exists, it is returned as a static value until
+ * the user explicitly sets a new base via the UI.
+ */
+function computePurchaseBalance(items) {
+  const baseAt = getSettingValue('purchase_balance_base_at', null);
+  const baseStr = getSettingValue('purchase_balance_base', null);
+
+  // No new base set yet – fall back to legacy static value if present
+  if (!baseAt) {
+    const legacyStr = getSettingValue('purchase_balance_manual', null);
+    if (legacyStr !== null) return { balance: toNum(legacyStr), base: toNum(legacyStr), base_at: null };
+    return { balance: 0, base: 0, base_at: null };
+  }
+
+  const base = toNum(baseStr || '0');
+  const baseDate = normalizeDateStr(baseAt); // normalise to YYYY-MM-DD regardless of source format
+
+  // Active items purchased on/after base date reduce the available balance
+  const activeDeduction = items
+    .filter((i) => !['sold', 'cancelled'].includes(String(i.status)))
+    .filter((i) => normalizeDateStr(i.purchase_date) >= baseDate)
+    .reduce((sum, i) => sum + toNum(i.total_cost), 0);
+
+  // Sold items WITHOUT money received, purchased on/after base date –
+  // cost is still "out" until payment arrives
+  const unpaidAfterBase = items
+    .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes')
+    .filter((i) => normalizeDateStr(i.purchase_date) >= baseDate)
+    .reduce((sum, i) => sum + toNum(i.total_cost), 0);
+
+  // Items purchased BEFORE base date, sold WITH money received ON or AFTER
+  // base date – their cost was captured in the base value, now it returns
+  const soldReturn = items
+    .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
+    .filter((i) => normalizeDateStr(i.purchase_date) < baseDate && normalizeDateStr(i.sale_date) >= baseDate)
+    .reduce((sum, i) => sum + toNum(i.total_cost), 0);
+
+  return { balance: base - activeDeduction - unpaidAfterBase + soldReturn, base: base, base_at: baseAt };
 }
 
 function deleteItem(itemNumber) {
@@ -583,12 +641,7 @@ function getDashboard() {
   const items = getCachedScopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
   const active = items.filter((i) => !['sold', 'cancelled'].includes(String(i.status)));
-  const purchaseBalanceManualStr = getSettingValue('purchase_balance_manual', null);
-  const purchaseBalanceCostsReceived = items
-    .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
-    .reduce((a, i) => a + toNum(i.total_cost), 0);
-  const purchaseBalanceManual = purchaseBalanceManualStr !== null ? toNum(purchaseBalanceManualStr) : 0;
-  const purchaseBalance = (purchaseBalanceManualStr !== null && toNum(purchaseBalanceManualStr) !== 0) ? toNum(purchaseBalanceManualStr) : purchaseBalanceCostsReceived;
+  const pb = computePurchaseBalance(items);
   const profitReceived = sold.filter((s) => boolText(s.money_received) === 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
   const profitPending = sold.filter((s) => boolText(s.money_received) !== 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
 
@@ -617,8 +670,9 @@ function getDashboard() {
     profit_this_month: profitReceived,
     profit_pending_this_month: profitPending,
     profit_share_each: profitReceived / 3,
-    purchase_balance: purchaseBalance,
-    purchase_balance_manual: purchaseBalanceManual,
+    purchase_balance: pb.balance,
+    purchase_balance_base: pb.base,
+    purchase_balance_base_at: pb.base_at,
     avg_monthly_roi: avg_monthly_roi,
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
     in_transit: items.filter((i) => String(i.status) === 'transit' || String(i.status) === 'japan_transit').length,
