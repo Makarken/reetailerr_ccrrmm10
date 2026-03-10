@@ -633,7 +633,7 @@ function getQC() {
   return out;
 }
 function getShippingOverview() {
-  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'sold');
+  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory).filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes');
   const summary = { pending: 0, shipped: 0, delivered: 0, cancelled: 0 };
   items.forEach((i) => { summary[shippingStatus(i.shipping_status)] += 1; });
   return { summary, items };
@@ -709,6 +709,7 @@ function updateMoneyReceived(itemNumber, moneyReceived, saleId) {
 function sendToRepair(itemNumber, masterIdOrName) {
   const item = getItemByNumber(itemNumber);
   if (!item) throw new Error('Товар не найден');
+  if (String(item.status) === 'sold' || item.sale_id) throw new Error('Нельзя отправить проданный товар в ремонт');
   const masters = getRepairMasters();
   const m = masters.find((x) => String(x.id) === String(masterIdOrName));
   item.repair_master = m ? `${m.name}${m.city ? ` (${m.city})` : ''}` : String(masterIdOrName || item.repair_master || '');
