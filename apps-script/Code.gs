@@ -518,11 +518,12 @@ function getDashboard() {
   const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const sold = items.filter((i) => String(i.status) === 'sold' && monthKey(i.sale_date) === monthKey(nowIso()));
   const active = items.filter((i) => !['sold', 'cancelled'].includes(String(i.status)));
-  const purchaseBalanceManual = toNum(getSettingValue('purchase_balance_manual', '0'));
+  const purchaseBalanceManualStr = getSettingValue('purchase_balance_manual', null);
   const purchaseBalanceCostsReceived = items
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
     .reduce((a, i) => a + toNum(i.total_cost), 0);
-  const purchaseBalance = purchaseBalanceManual - purchaseBalanceCostsReceived;
+  const purchaseBalanceManual = purchaseBalanceManualStr !== null ? toNum(purchaseBalanceManualStr) : 0;
+  const purchaseBalance = purchaseBalanceManualStr !== null ? toNum(purchaseBalanceManualStr) : purchaseBalanceCostsReceived;
   const profitReceived = sold.filter((s) => boolText(s.money_received) === 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
   const profitPending = sold.filter((s) => boolText(s.money_received) !== 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
 
@@ -531,6 +532,18 @@ function getDashboard() {
   const activeWithAge = active.filter((i) => storageStartDayGs(i) > 0);
   const oldestItem = activeWithAge.length > 0 ? activeWithAge.reduce((best, i) => storageStartDayGs(i) > storageStartDayGs(best) ? i : best, activeWithAge[0]) : null;
   const oldestDays = oldestItem ? storageStartDayGs(oldestItem) : 0;
+
+  const allSales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
+  const monthlyRoiMap = {};
+  allSales.forEach((s) => {
+    const m = monthKey(s.sale_date || s.timestamp);
+    if (!m) return;
+    if (!monthlyRoiMap[m]) monthlyRoiMap[m] = { profit: 0, cost: 0 };
+    monthlyRoiMap[m].profit += toNum(s.profit);
+    monthlyRoiMap[m].cost += toNum(s.total_cost);
+  });
+  const monthlyRois = Object.values(monthlyRoiMap).filter((m) => m.cost > 0).map((m) => (m.profit / m.cost) * 100);
+  const avg_monthly_roi = monthlyRois.length > 0 ? monthlyRois.reduce((a, v) => a + v, 0) / monthlyRois.length : 0;
 
   return {
     active_stock: active.length,
@@ -541,10 +554,12 @@ function getDashboard() {
     profit_share_each: profitReceived / 3,
     purchase_balance: purchaseBalance,
     purchase_balance_manual: purchaseBalanceManual,
-    pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
-    in_transit: items.filter((i) => String(i.status) === 'transit').length,
+    avg_monthly_roi: avg_monthly_roi,
+    pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold' && boolText(i.money_received) !== 'yes').length,
+    in_transit: items.filter((i) => String(i.status) === 'transit' || String(i.status) === 'japan_transit').length,
     repair_count: items.filter((i) => String(i.status) === 'repair').length,
     attention_count: items.filter((i) => {
+      if (String(i.status) === 'sold' && boolText(i.money_received) === 'yes') return false;
       if (boolText(i.need_rephoto) === 'yes') return true;
       if (!String(i.photo_url || '')) return true;
       if (String(i.status) === 'sold' && String(i.shipping_status || 'pending') === 'pending') return true;
@@ -598,6 +613,7 @@ function getQC() {
   const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
   const out = [];
   items.forEach((i) => {
+    if (String(i.status) === 'sold' && boolText(i.money_received) === 'yes') return;
     const reasons = [];
     if (!String(i.description || '').trim()) reasons.push('Нет описания');
     if (boolText(i.listed_vinted) !== 'yes') reasons.push('Не выставлено на Vinted');
