@@ -109,6 +109,16 @@ function monthKey(v) {
   }
   return String(v).slice(0, 7);
 }
+function normalizeDateStr(v) {
+  if (!v) return '';
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
 function shippingStatus(v) { return ['pending', 'shipped', 'delivered', 'cancelled'].includes(String(v || '')) ? String(v) : 'pending'; }
 function normalizeIdentity(value) { return String(value || '').trim().toLowerCase(); }
 function randomId(prefix) { return [prefix, Utilities.getUuid().replace(/-/g, '')].join('_'); }
@@ -682,6 +692,7 @@ function updateMoneyReceived(itemNumber, moneyReceived) {
   const item = getItemByNumber(itemNumber);
   if (!item) throw new Error('Товар не найден');
   item.money_received = boolText(moneyReceived);
+  item.sale_date = normalizeDateStr(item.sale_date);
   item.updated_at = nowIso();
   saveInventoryItem(item);
   syncSaleRecord(item);
@@ -738,6 +749,7 @@ function syncSaleRecord(item) {
   const idx = rows.findIndex((r) => String(r.workspace_id) === ws && String(r.sale_id) === String(item.sale_id));
   if (idx < 0) return;
   const sale = rows[idx];
+  sale.sale_date = normalizeDateStr(sale.sale_date);
   sale.money_received = item.money_received;
   sale.shipping_status = item.shipping_status;
   sale.tracking_number = String(item.tracking_number || '');
