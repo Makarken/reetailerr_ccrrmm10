@@ -523,7 +523,7 @@ function getDashboard() {
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
     .reduce((a, i) => a + toNum(i.total_cost), 0);
   const purchaseBalanceManual = purchaseBalanceManualStr !== null ? toNum(purchaseBalanceManualStr) : 0;
-  const purchaseBalance = purchaseBalanceManualStr !== null ? toNum(purchaseBalanceManualStr) : purchaseBalanceCostsReceived;
+  const purchaseBalance = (purchaseBalanceManualStr !== null && toNum(purchaseBalanceManualStr) !== 0) ? toNum(purchaseBalanceManualStr) : purchaseBalanceCostsReceived;
   const profitReceived = sold.filter((s) => boolText(s.money_received) === 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
   const profitPending = sold.filter((s) => boolText(s.money_received) !== 'yes').reduce((a, s) => a + toNum(s.profit || (toNum(s.sale_price) - toNum(s.total_cost))), 0);
 
