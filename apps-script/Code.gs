@@ -136,7 +136,7 @@ function routeAction(action, payload) {
 }
 
 function nowIso() { return new Date().toISOString(); }
-function toNum(v) { return Number(v || 0); }
+function toNum(v) { return (v == null || v === '') ? 0 : Number(v); }
 function boolText(v) { return ['true', '1', 'yes', 'да', 'y'].includes(String(v || '').toLowerCase()) ? 'yes' : 'no'; }
 function monthKey(v) {
   if (!v) return '';
@@ -494,63 +494,86 @@ function updatePurchaseBalanceManual(value) {
   const v = toNum(value);
   setSettingValue('purchase_balance_base', String(v));
   setSettingValue('purchase_balance_base_at', nowIso());
+  setSettingValue('purchase_balance_base_is_set', 'yes');
   return v;
 }
 
 /**
- * Compute purchase balance using manual base + automatic movements.
+ * Compute purchase balance using a clean two-mode model.
  *
- * Formula:
+ * Mode A — manual base is set (purchase_balance_base_is_set = 'yes', or
+ *          legacy: purchase_balance_base_at is present for backward compat):
+ *
  *   balance = base
- *             - Σ cost of ACTIVE items purchased ON or AFTER base date
- *             - Σ cost of SOLD (money_received=NO) items purchased ON or AFTER base date
- *               (money not yet received → cost still "locked")
- *             + Σ cost of SOLD (money_received=YES) items purchased BEFORE base date
- *               but sold ON or AFTER base date
- *               (pre-base stock that was "in the base" now returns its cost)
+ *             - Σ total_cost of ACTIVE items with purchase_date >= base_date
+ *             - Σ total_cost of SOLD (money_received=NO) items with purchase_date >= base_date
+ *             + Σ total_cost of SOLD (money_received=YES) items with purchase_date < base_date
+ *               AND sale_date >= base_date
  *
- * Items purchased AFTER base that sell WITH money received cancel out (net=0):
- *   they leave the active deduction when sold, and are not in any addback.
+ *   0 is a valid manual base value.  The presence of the is_set flag (not the
+ *   numeric value) determines whether a manual base has been set.
  *
- * Backward compatibility: if no new base is found but the legacy
- * purchase_balance_manual key exists, it is returned as a static value until
- * the user explicitly sets a new base via the UI.
+ * Mode B — no manual base:
+ *   balance = -(Σ total_cost of all active items) - (Σ total_cost of sold items
+ *               where money_received = NO)
+ *   i.e. the total outstanding cost still tied up in inventory / unpaid sales.
  */
 function computePurchaseBalance(items) {
+  const baseIsSetRaw = getSettingValue('purchase_balance_base_is_set', null);
   const baseAt = getSettingValue('purchase_balance_base_at', null);
-  const baseStr = getSettingValue('purchase_balance_base', null);
 
-  // No new base set yet – fall back to legacy static value if present
-  if (!baseAt) {
+  // A manual base exists when the explicit is_set flag is 'yes', OR (backward
+  // compatibility) when the legacy base_at timestamp was written by an older
+  // version of this code before the is_set flag was introduced.
+  // baseAt is treated as absent when it is null or blank.
+  const hasManualBase =
+    (baseIsSetRaw !== null && boolText(baseIsSetRaw) === 'yes') ||
+    (baseAt !== null && String(baseAt).trim() !== '');
+
+  if (!hasManualBase) {
+    // Mode B: no manual base – check for legacy static override first.
     const legacyStr = getSettingValue('purchase_balance_manual', null);
-    if (legacyStr !== null) return { balance: toNum(legacyStr), base: toNum(legacyStr), base_at: null };
-    return { balance: 0, base: 0, base_at: null };
+    if (legacyStr !== null && legacyStr !== '') {
+      const legacyVal = toNum(legacyStr);
+      return { balance: legacyVal, base: legacyVal, base_at: null, base_is_set: false };
+    }
+    // Auto-compute: show how much money is outstanding (negative = still invested).
+    const activeOutstanding = items
+      .filter((i) => !['sold', 'cancelled'].includes(String(i.status)))
+      .reduce((sum, i) => sum + toNum(i.total_cost), 0);
+    const unpaidSold = items
+      .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes')
+      .reduce((sum, i) => sum + toNum(i.total_cost), 0);
+    return { balance: -(activeOutstanding + unpaidSold), base: null, base_at: null, base_is_set: false };
   }
 
-  const base = toNum(baseStr || '0');
-  const baseDate = normalizeDateStr(baseAt); // normalise to YYYY-MM-DD regardless of source format
+  // Mode A: manual base.
+  const baseStr = getSettingValue('purchase_balance_base', null);
+  // toNum already returns 0 for null/empty, so this correctly preserves base=0.
+  const base = toNum(baseStr);
+  const baseDate = normalizeDateStr(baseAt); // normalise to YYYY-MM-DD
 
-  // Active items purchased on/after base date reduce the available balance
+  // Active items purchased on/after base date reduce the available balance.
   const activeDeduction = items
     .filter((i) => !['sold', 'cancelled'].includes(String(i.status)))
     .filter((i) => normalizeDateStr(i.purchase_date) >= baseDate)
     .reduce((sum, i) => sum + toNum(i.total_cost), 0);
 
   // Sold items WITHOUT money received, purchased on/after base date –
-  // cost is still "out" until payment arrives
+  // cost is still "out" until payment arrives.
   const unpaidAfterBase = items
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) !== 'yes')
     .filter((i) => normalizeDateStr(i.purchase_date) >= baseDate)
     .reduce((sum, i) => sum + toNum(i.total_cost), 0);
 
   // Items purchased BEFORE base date, sold WITH money received ON or AFTER
-  // base date – their cost was captured in the base value, now it returns
+  // base date – their cost was captured in the base value, now it returns.
   const soldReturn = items
     .filter((i) => String(i.status) === 'sold' && boolText(i.money_received) === 'yes')
     .filter((i) => normalizeDateStr(i.purchase_date) < baseDate && normalizeDateStr(i.sale_date) >= baseDate)
     .reduce((sum, i) => sum + toNum(i.total_cost), 0);
 
-  return { balance: base - activeDeduction - unpaidAfterBase + soldReturn, base: base, base_at: baseAt };
+  return { balance: base - activeDeduction - unpaidAfterBase + soldReturn, base: base, base_at: baseAt, base_is_set: true };
 }
 
 function deleteItem(itemNumber) {
@@ -673,6 +696,7 @@ function getDashboard() {
     purchase_balance: pb.balance,
     purchase_balance_base: pb.base,
     purchase_balance_base_at: pb.base_at,
+    purchase_balance_base_is_set: pb.base_is_set,
     avg_monthly_roi: avg_monthly_roi,
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
     in_transit: items.filter((i) => String(i.status) === 'transit' || String(i.status) === 'japan_transit').length,
