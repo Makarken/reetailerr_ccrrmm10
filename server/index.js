@@ -19,7 +19,7 @@ const SHEETS = { items: 'items', purchases: 'purchases', sales: 'sales', activit
 const HEADERS = {
   items: ['item_id', 'photo_url', 'brand', 'model', 'category', 'purchase_date', 'purchase_price', 'shipping_cost', 'customs_cost', 'repair_cost', 'total_cost', 'listing_price', 'sale_price', 'platform', 'buyer', 'notes', 'platform_fee', 'shipping_to_buyer', 'status', 'gross_profit', 'net_profit', 'markup_percent', 'updated_at'],
   purchases: ['timestamp', 'item_id', 'purchase_date', 'purchase_price', 'shipping_cost', 'customs_cost', 'repair_cost', 'total_cost', 'listing_price', 'notes'],
-  sales: ['timestamp', 'item_id', 'sale_price', 'platform', 'buyer', 'platform_fee', 'shipping_to_buyer', 'gross_profit', 'net_profit', 'markup_percent', 'status', 'notes'],
+  sales: ['timestamp', 'item_id', 'sale_date', 'sale_price', 'platform', 'buyer', 'platform_fee', 'shipping_to_buyer', 'gross_profit', 'net_profit', 'markup_percent', 'status', 'notes'],
   activity: ['timestamp', 'item_id', 'action', 'field', 'old_value', 'new_value', 'actor'],
   statistics: ['timestamp', 'active_stock', 'listed', 'in_transit', 'repair', 'hold', 'sold_this_month', 'net_profit_this_month', 'net_profit_all_time', 'capital_tied_in_stock']
 };
@@ -236,7 +236,7 @@ function monthKey(dateString) {
 
 function buildDashboard(items, sales) {
   const currentMonth = monthKey(new Date().toISOString());
-  const monthSales = sales.filter((s) => monthKey(s.timestamp) === currentMonth);
+  const monthSales = sales.filter((s) => monthKey(s.sale_date || s.timestamp) === currentMonth);
   const netMonth = monthSales.reduce((acc, s) => acc + toNum(s.net_profit), 0);
   const netAll = sales.reduce((acc, s) => acc + toNum(s.net_profit), 0);
   return {
@@ -258,7 +258,7 @@ function buildAnalytics(items, sales) {
   const byBrand = {};
 
   sales.forEach((s) => {
-    const m = monthKey(s.timestamp);
+    const m = monthKey(s.sale_date || s.timestamp);
     monthly[m] ??= { revenue: 0, net: 0 };
     monthly[m].revenue += toNum(s.sale_price);
     monthly[m].net += toNum(s.net_profit);
@@ -355,7 +355,7 @@ async function handleApi(req, res, pathname) {
       const item = normalizeItem({ ...current, ...body, status: body.status || 'sold' }, current);
       await updateItemRow(current.item_id, item);
       await appendRow(SHEETS.sales, HEADERS.sales, {
-        timestamp: new Date().toISOString(), item_id: item.item_id, sale_price: item.sale_price, platform: item.platform, buyer: item.buyer, platform_fee: item.platform_fee, shipping_to_buyer: item.shipping_to_buyer, gross_profit: item.gross_profit, net_profit: item.net_profit, markup_percent: item.markup_percent, status: item.status, notes: body.notes || ''
+        timestamp: new Date().toISOString(), item_id: item.item_id, sale_date: body.sale_date || new Date().toISOString().slice(0, 10), sale_price: item.sale_price, platform: item.platform, buyer: item.buyer, platform_fee: item.platform_fee, shipping_to_buyer: item.shipping_to_buyer, gross_profit: item.gross_profit, net_profit: item.net_profit, markup_percent: item.markup_percent, status: item.status, notes: body.notes || ''
       });
       await appendRow(SHEETS.activity, HEADERS.activity, {
         timestamp: new Date().toISOString(), item_id: item.item_id, action: 'Оформление продажи', field: 'sale_price', old_value: current.sale_price || '—', new_value: String(item.sale_price), actor: 'web'
@@ -365,7 +365,7 @@ async function handleApi(req, res, pathname) {
 
     if (req.method === 'GET' && pathname === '/api/activity') {
       const activity = await readSheet(SHEETS.activity, HEADERS.activity);
-      return json(res, 200, { activity: activity.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))) });
+      return json(res, 200, { activity: activity.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 200) });
     }
 
     if (req.method === 'GET' && pathname === '/api/dashboard') {
@@ -375,7 +375,6 @@ async function handleApi(req, res, pathname) {
         readSheet(SHEETS.activity, HEADERS.activity)
       ]);
       const stats = buildDashboard(items, sales);
-      await appendRow(SHEETS.statistics, HEADERS.statistics, { timestamp: new Date().toISOString(), ...stats });
       return json(res, 200, { stats, recentActivity: activity.slice(0, 8) });
     }
 

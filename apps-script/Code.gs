@@ -240,8 +240,12 @@ function requireSession(token) {
   const info = getSessionInfo(token);
   if (!info) throw new Error('Требуется авторизация');
   const row = getRows(CONFIG.AUTH.sessions, CONFIG.HEADERS.authSessions).find((s) => s.session_id === info.token);
-  row.last_seen_at = nowIso();
-  upsertSessionRow(row);
+  // Only write last_seen_at if more than 5 minutes stale to avoid a sheet write on every request
+  const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+  if (Date.now() - lastSeen > 5 * 60 * 1000) {
+    row.last_seen_at = nowIso();
+    upsertSessionRow(row);
+  }
   return info;
 }
 
@@ -381,23 +385,25 @@ function cancelSale(itemNumber, saleId) {
     saveSale(sale);
   }
 
+  const restoredStatus = sale && String(sale.pre_sale_status || '') ? String(sale.pre_sale_status) : 'ready';
   item.sale_id = '';
   item.sale_price = '';
   item.sale_date = '';
   item.profit = '';
   item.platform_fee = '';
   item.money_received = 'no';
-  item.status = 'listed';
+  item.shipping_status = 'pending';
+  item.status = restoredStatus;
   item.updated_at = nowIso();
   saveInventoryItem(item);
-  addActivity(item.item_number, 'Отмена продажи', 'sale', 'sold', 'listed');
+  addActivity(item.item_number, 'Отмена продажи', 'sale', 'sold', restoredStatus);
   return item;
 }
 
 function getSalesByMonth(month) {
   const m = monthKey(month) || monthKey(nowIso());
   const all = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
-  const items = all.filter((s) => monthKey(s.sale_date || s.timestamp) === m);
+  const items = all.filter((s) => monthKey(s.sale_date) === m);
   const summary = {
     sold_count: items.length,
     revenue: items.reduce((a, s) => a + toNum(s.sale_price), 0),
@@ -452,7 +458,7 @@ function deleteItem(itemNumber) {
   addActivity(key, 'Удаление карточки', 'card', 'exists', 'deleted');
   return true;
 }
-function getActivity() { return scopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))); }
+function getActivity() { return scopedRows(CONFIG.SHEETS.activity, CONFIG.HEADERS.activity).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 200); }
 function createWorkspace(name, viewerLogin, viewerPassword) {
   const nm = String(name || '').trim();
   const vl = String(viewerLogin || '').trim();
@@ -549,7 +555,7 @@ function getDashboard() {
   const allSales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
   const monthlyRoiMap = {};
   allSales.forEach((s) => {
-    const m = monthKey(s.sale_date || s.timestamp);
+    const m = monthKey(s.sale_date);
     if (!m) return;
     if (!monthlyRoiMap[m]) monthlyRoiMap[m] = { profit: 0, cost: 0 };
     monthlyRoiMap[m].profit += toNum(s.profit);
@@ -568,10 +574,10 @@ function getDashboard() {
     purchase_balance: purchaseBalance,
     purchase_balance_manual: purchaseBalanceManual,
     avg_monthly_roi: avg_monthly_roi,
-    pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold' && boolText(i.money_received) !== 'yes').length,
+    pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold').length,
     in_transit: items.filter((i) => String(i.status) === 'transit' || String(i.status) === 'japan_transit').length,
     repair_count: items.filter((i) => String(i.status) === 'repair').length,
-    attention_count: getQC().length,
+    attention_count: getQCFromItems(items).length,
     awaiting_japan: items.filter((i) => boolText(i.arrived_from_japan) !== 'yes' && !['sold', 'cancelled'].includes(String(i.status))).length,
     avg_sale_days: avgSaleDays,
     oldest_item_number: oldestItem ? oldestItem.item_number : '',
@@ -592,7 +598,7 @@ function getAnalytics() {
   const sales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).filter((s) => String(s.is_cancelled || 'no') !== 'yes');
   const monthly = {};
   sales.forEach((s) => {
-    const m = monthKey(s.sale_date || s.timestamp);
+    const m = monthKey(s.sale_date);
     if (!m) return;
     if (!monthly[m]) monthly[m] = { sold_count: 0, revenue: 0, profit: 0, profit_processing: 0, potential_profit: 0, markup_sum: 0, markup_count: 0, items: [] };
     const pr = toNum(s.profit);
@@ -616,18 +622,49 @@ function getAnalytics() {
   return { monthly };
 }
 function getQC() {
-  const items = scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory);
+  return getQCFromItems(scopedRows(CONFIG.SHEETS.inventory, CONFIG.HEADERS.inventory));
+}
+function getQCFromItems(items) {
+  // Statuses where the item is physically present and should be listed for sale
+  const LISTING_STATUSES = { ready: 1, listed: 1, hold: 1 };
+  const MAX_REPAIR_DAYS = 14; // days before a repair is flagged as overdue
+  const MS_PER_DAY = 86400000;
+  const today = new Date();
   const out = [];
   items.forEach((i) => {
-    if (String(i.status) === 'sold' && boolText(i.money_received) === 'yes') return;
+    const status = String(i.status || '');
+    // Skip fully completed sales (delivered + money received)
+    if (status === 'sold' && boolText(i.money_received) === 'yes' && String(i.shipping_status || '') === 'delivered') return;
     const reasons = [];
-    if (!String(i.description || '').trim()) reasons.push('Нет описания');
-    if (boolText(i.listed_vinted) !== 'yes') reasons.push('Не выставлено на Vinted');
-    if (boolText(i.listed_vestiaire) !== 'yes') reasons.push('Не выставлено на Vestiaire');
-    if (boolText(i.need_rephoto) === 'yes') reasons.push('Нужно перефото');
-    if (String(i.status) === 'sold' && boolText(i.money_received) !== 'yes') reasons.push('Продано, но деньги не зашли');
-    if (String(i.status) === 'sold' && String(i.shipping_status || 'pending') === 'pending') reasons.push('Продано, но не отправлено');
-    if (String(i.shipping_status) === 'shipped') reasons.push('Отправлено, но не доставлено');
+
+    // No photo – applies to every item regardless of status
+    if (!String(i.photo_url || '').trim()) reasons.push('Нет фото');
+
+    // Items available for sale: must have description and be listed on at least one platform
+    if (LISTING_STATUSES[status]) {
+      if (!String(i.description || '').trim()) reasons.push('Нет описания');
+      if (boolText(i.listed_vinted) !== 'yes' && boolText(i.listed_vestiaire) !== 'yes') reasons.push('Не выставлено ни на Vinted, ни на Vestiaire');
+    }
+
+    // Rephoto needed – applies to any non-cancelled item
+    if (status !== 'cancelled' && boolText(i.need_rephoto) === 'yes') reasons.push('Нужно перефото');
+
+    // Sale-related issues
+    if (status === 'sold') {
+      if (boolText(i.money_received) !== 'yes') reasons.push('Продано, но деньги не зашли');
+      if (String(i.shipping_status || 'pending') === 'pending') reasons.push('Продано, но не отправлено');
+    }
+    if (String(i.shipping_status || '') === 'shipped') reasons.push('Отправлено, но не доставлено');
+
+    // Repair taking too long
+    if (status === 'repair' && i.repair_sent_date) {
+      const sentDate = new Date(i.repair_sent_date);
+      if (!isNaN(sentDate.getTime())) {
+        const repairDays = Math.floor((today.getTime() - sentDate.getTime()) / MS_PER_DAY);
+        if (repairDays > MAX_REPAIR_DAYS) reasons.push('В ремонте более ' + repairDays + ' дней');
+      }
+    }
+
     if (reasons.length) out.push({ item_number: i.item_number, model_name: i.model_name, reasons, photo_url: i.photo_url, status: i.status });
   });
   return out;
