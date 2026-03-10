@@ -79,12 +79,12 @@ function routeAction(action, payload) {
     switchWorkspace: () => ({ ok: true, ...switchWorkspace(payload.workspace_id || '') }),
     createPurchase: () => ({ ok: true, item: createPurchase(payload) }),
     recordSale: () => ({ ok: true, item: recordSale(payload) }),
-    cancelSale: () => ({ ok: true, item: cancelSale(payload.item_number) }),
+    cancelSale: () => ({ ok: true, item: cancelSale(payload.item_number, payload.sale_id || '') }),
     editItem: () => ({ ok: true, item: editItem(payload.item_number, payload.updates || {}) }),
     updateStatus: () => ({ ok: true, item: updateStatus(payload.item_number, payload.status) }),
     updatePurchaseBalance: () => ({ ok: true, value: updatePurchaseBalanceManual(payload.value) }),
     updateShipping: () => ({ ok: true, item: updateShipping(payload.item_number, payload.shipping || {}) }),
-    updateMoneyReceived: () => ({ ok: true, item: updateMoneyReceived(payload.item_number, payload.money_received) }),
+    updateMoneyReceived: () => ({ ok: true, item: updateMoneyReceived(payload.item_number, payload.money_received, payload.sale_id || '') }),
     sendToRepair: () => ({ ok: true, item: sendToRepair(payload.item_number, payload.master_id || payload.master_name || '') }),
     completeRepair: () => ({ ok: true, item: completeRepair(payload.item_number, payload.repair_cost) }),
     addRepairMaster: () => ({ ok: true, masters: addRepairMaster(payload.name, payload.city) }),
@@ -316,6 +316,7 @@ function createPurchase(payload) {
 function recordSale(payload) {
   const item = getItemByNumber(assertNumericItemNumber(payload.item_number));
   if (!item) throw new Error('Товар не найден');
+  if (String(item.status) === 'sold') throw new Error('Товар уже продан. Сначала отмените продажу.');
   const salePrice = toNum(payload.sale_price);
   const saleDate = String(payload.sale_date || nowIso().slice(0, 10));
   const platform = String(payload.platform || item.platform || 'Vinted');
@@ -364,12 +365,14 @@ function recordSale(payload) {
   addActivity(item.item_number, 'Оформление продажи', 'sale', '', String(item.sale_price));
   return item;
 }
-function cancelSale(itemNumber) {
+function cancelSale(itemNumber, saleId) {
   const item = getItemByNumber(itemNumber);
   if (!item) throw new Error('Товар не найден');
 
   const sales = scopedRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales);
-  const sale = sales.find((s) => String(s.sale_id) === String(item.sale_id)) || sales.filter((s) => String(s.item_number) === String(item.item_number)).slice(-1)[0];
+  const sale = (saleId && sales.find((s) => String(s.sale_id) === String(saleId)))
+    || (item.sale_id && sales.find((s) => String(s.sale_id) === String(item.sale_id)))
+    || sales.filter((s) => String(s.item_number) === String(item.item_number) && String(s.is_cancelled || 'no') !== 'yes').slice(-1)[0];
   if (sale) {
     sale.is_cancelled = 'yes';
     sale.cancelled_at = nowIso();
@@ -568,14 +571,7 @@ function getDashboard() {
     pending_shipping: items.filter((i) => String(i.shipping_status || 'pending') === 'pending' && String(i.status) === 'sold' && boolText(i.money_received) !== 'yes').length,
     in_transit: items.filter((i) => String(i.status) === 'transit' || String(i.status) === 'japan_transit').length,
     repair_count: items.filter((i) => String(i.status) === 'repair').length,
-    attention_count: items.filter((i) => {
-      if (String(i.status) === 'sold' && boolText(i.money_received) === 'yes') return false;
-      if (boolText(i.need_rephoto) === 'yes') return true;
-      if (!String(i.photo_url || '')) return true;
-      if (String(i.status) === 'sold' && String(i.shipping_status || 'pending') === 'pending') return true;
-      if (String(i.status) === 'sold' && boolText(i.money_received) !== 'yes') return true;
-      return false;
-    }).length,
+    attention_count: getQC().length,
     awaiting_japan: items.filter((i) => boolText(i.arrived_from_japan) !== 'yes' && !['sold', 'cancelled'].includes(String(i.status))).length,
     avg_sale_days: avgSaleDays,
     oldest_item_number: oldestItem ? oldestItem.item_number : '',
@@ -688,14 +684,25 @@ function updateShipping(itemNumber, shipping) {
   addActivity(item.item_number, 'Обновление доставки', 'shipping', '', item.shipping_status);
   return item;
 }
-function updateMoneyReceived(itemNumber, moneyReceived) {
+function updateMoneyReceived(itemNumber, moneyReceived, saleId) {
   const item = getItemByNumber(itemNumber);
   if (!item) throw new Error('Товар не найден');
   item.money_received = boolText(moneyReceived);
   item.sale_date = normalizeDateStr(item.sale_date);
   item.updated_at = nowIso();
   saveInventoryItem(item);
-  syncSaleRecord(item);
+  if (item.sale_id) {
+    syncSaleRecord(item);
+  } else if (saleId) {
+    const ws = activeWorkspaceId();
+    const rows = getRows(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales);
+    const idx = rows.findIndex((r) => String(r.workspace_id) === ws && String(r.sale_id) === String(saleId));
+    if (idx >= 0) {
+      const sale = rows[idx];
+      sale.money_received = item.money_received;
+      getSheet(CONFIG.SHEETS.sales, CONFIG.HEADERS.sales).getRange(idx + 2, 1, 1, CONFIG.HEADERS.sales.length).setValues([objToRow(sale, CONFIG.HEADERS.sales)]);
+    }
+  }
   addActivity(item.item_number, 'Обновление оплаты', 'money_received', '', item.money_received);
   return item;
 }
