@@ -753,7 +753,12 @@ function deleteRowsWhere(sheetName, headers, predicate) {
 
 function jsonResponse(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
 function ss() { return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID); }
-function cellText(v) { const txt = String(v == null ? '' : v); return txt.length > 49000 ? '' : txt; }
+function cellText(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  const txt = String(v == null ? '' : v); return txt.length > 49000 ? '' : txt;
+}
 function objToRow(obj, headers) { return headers.map((h) => obj[h] == null ? '' : cellText(obj[h])); }
 function getSheet(name, headers) {
   const sheet = ss().getSheetByName(name) || ss().insertSheet(name);
