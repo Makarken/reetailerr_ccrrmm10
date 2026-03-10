@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,7 +38,42 @@ const mockDb = {
   statistics: [HEADERS.statistics]
 };
 
-const json = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); };
+// ── In-memory caches ────────────────────────────────────────────────────────
+
+// OAuth token cache – token is valid for 1 hour; refresh 60 s before expiry
+let _tokenCache = null;
+
+// Short-lived data cache for Google Sheets reads (avoids hammering the API)
+const DATA_CACHE_TTL = 15 * 1000; // 15 seconds
+const _dataCache = new Map();
+
+function cacheGet(key) {
+  const entry = _dataCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) return entry.data;
+  _dataCache.delete(key);
+  return null;
+}
+
+function cacheSet(key, data) {
+  _dataCache.set(key, { data, expiresAt: Date.now() + DATA_CACHE_TTL });
+}
+
+function cacheInvalidate(...keys) {
+  keys.forEach((k) => _dataCache.delete(k));
+}
+
+// Static file content cache: stores { raw, gz, etag } per file path.
+// A simple size cap guards against memory growth if many unique paths are requested.
+const _fileCache = new Map();
+const FILE_CACHE_MAX = 100;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const json = (res, status, body) => {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(payload) });
+  res.end(payload);
+};
 const toNum = (v) => Number(v || 0);
 
 const parseBody = async (req) => {
@@ -102,6 +138,9 @@ function requireConfig() {
 async function getAccessToken() {
   if (MOCK_MODE) return 'mock';
   const now = Math.floor(Date.now() / 1000);
+  // Reuse cached token if it won't expire in the next 60 seconds
+  if (_tokenCache && _tokenCache.expiresAt > now + 60) return _tokenCache.token;
+
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const payload = Buffer.from(JSON.stringify({
     iss: SERVICE_ACCOUNT_EMAIL,
@@ -121,7 +160,9 @@ async function getAccessToken() {
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion })
   });
   if (!tokenRes.ok) throw new Error(`OAuth error ${tokenRes.status}`);
-  return (await tokenRes.json()).access_token;
+  const accessToken = (await tokenRes.json()).access_token;
+  _tokenCache = { token: accessToken, expiresAt: now + 3600 };
+  return accessToken;
 }
 
 async function sheetsRequest(token, method, endpoint, body) {
@@ -145,19 +186,29 @@ async function ensureHeader(token, sheetName, headers) {
 }
 
 async function readSheet(sheet, headers) {
-  if (MOCK_MODE) return mockDb[sheet].slice(1).map((r) => rowToObj(r, headers));
+  const cached = cacheGet(sheet);
+  if (cached) return cached;
+
+  if (MOCK_MODE) {
+    const data = mockDb[sheet].slice(1).map((r) => rowToObj(r, headers));
+    cacheSet(sheet, data);
+    return data;
+  }
   const token = await getAccessToken();
   await ensureHeader(token, sheet, headers);
   const data = await sheetsRequest(token, 'GET', `/${encodeURIComponent(`values/${sheet}!A2:Z`)}`);
-  return (data.values || []).map((r) => rowToObj(r, headers));
+  const result = (data.values || []).map((r) => rowToObj(r, headers));
+  cacheSet(sheet, result);
+  return result;
 }
 
 async function appendRow(sheet, headers, rowObj) {
   const row = objToRow(rowObj, headers);
-  if (MOCK_MODE) { mockDb[sheet].push(row); return; }
+  if (MOCK_MODE) { mockDb[sheet].push(row); cacheInvalidate(sheet); return; }
   const token = await getAccessToken();
   await ensureHeader(token, sheet, headers);
   await sheetsRequest(token, 'POST', `/${encodeURIComponent(`values/${sheet}!A1:Z1:append`)}?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, { values: [row] });
+  cacheInvalidate(sheet);
 }
 
 async function updateItemRow(itemId, nextObj) {
@@ -165,6 +216,7 @@ async function updateItemRow(itemId, nextObj) {
     const idx = mockDb.items.findIndex((r, i) => i > 0 && r[0] === itemId);
     if (idx === -1) throw new Error('Item not found');
     mockDb.items[idx] = objToRow(nextObj, HEADERS.items);
+    cacheInvalidate(SHEETS.items);
     return;
   }
   const token = await getAccessToken();
@@ -175,6 +227,7 @@ async function updateItemRow(itemId, nextObj) {
   if (idx === -1) throw new Error('Item not found');
   const rowNum = idx + 2;
   await sheetsRequest(token, 'PUT', `/${encodeURIComponent(`values/${SHEETS.items}!A${rowNum}:Z${rowNum}`)}?valueInputOption=USER_ENTERED`, { values: [objToRow(nextObj, HEADERS.items)] });
+  cacheInvalidate(SHEETS.items);
 }
 
 function monthKey(dateString) {
@@ -344,6 +397,19 @@ async function handleApi(req, res, pathname) {
 }
 
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8' };
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json']);
+
+// Files with a version query param (e.g. ?v=8) are treated as immutable by the browser;
+// index.html changes rarely but should stay fresh – use a short max-age.
+function cacheControlFor(filePath) {
+  const ext = path.extname(filePath);
+  if (ext === '.html') return 'public, max-age=60';                // 1 minute
+  return 'public, max-age=31536000, immutable';                    // 1 year (versioned assets)
+}
+
+function gzipAsync(buf) {
+  return new Promise((resolve, reject) => zlib.gzip(buf, { level: zlib.constants.Z_BEST_SPEED }, (err, result) => err ? reject(err) : resolve(result)));
+}
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -354,9 +420,37 @@ const server = http.createServer(async (req, res) => {
   if (!filePath.startsWith(WEB_ROOT)) return json(res, 403, { error: 'Forbidden' });
 
   try {
-    const content = await readFile(filePath);
-    res.writeHead(200, { 'Content-Type': mime[path.extname(filePath)] || 'application/octet-stream' });
-    res.end(content);
+    const ext = path.extname(filePath);
+    const contentType = mime[ext] || 'application/octet-stream';
+    const canCompress = COMPRESSIBLE.has(ext) && /gzip/.test(req.headers['accept-encoding'] || '');
+
+    // Use cached file entry when available, otherwise read from disk and cache
+    let entry = _fileCache.get(filePath);
+    if (!entry) {
+      const raw = await readFile(filePath);
+      const etag = `"${crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)}"`;
+      const gz = await gzipAsync(raw);
+      entry = { raw, gz, etag };
+      if (_fileCache.size < FILE_CACHE_MAX) _fileCache.set(filePath, entry);
+    }
+
+    if (req.headers['if-none-match'] === entry.etag) {
+      res.writeHead(304);
+      res.end();
+      return;
+    }
+
+    const body = canCompress ? entry.gz : entry.raw;
+    const headers = {
+      'Content-Type': contentType,
+      'Cache-Control': cacheControlFor(filePath),
+      'ETag': entry.etag,
+      'Content-Length': body.length
+    };
+    if (canCompress) headers['Content-Encoding'] = 'gzip';
+
+    res.writeHead(200, headers);
+    res.end(body);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Страница не найдена');
